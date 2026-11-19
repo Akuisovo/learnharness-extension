@@ -1,0 +1,12 @@
+{
+  "apiVersion": 1,
+  "id": "revisionhub-pastpapers",
+  "name": "RevisionHub past papers",
+  "version": "0.1.0",
+  "minAppVersion": "0.6.1",
+  "description": "Fetch IB past-paper questions and mark schemes from RevisionHub using your own session, then pose them as teaching questions. Stores the session cookie locally; no core learning data is written.",
+  "author": "local",
+  "main": "main.js",
+  "backend": "backend.cjs",
+  "styles": "styles.css"
+}
