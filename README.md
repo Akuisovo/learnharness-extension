@@ -6,8 +6,8 @@ release.
 
 | Extension | Folder | Release | Authentication |
 | --- | --- | --- | --- |
-| **RevisionHub past papers** | [`revisionhub-pastpapers/`](./revisionhub-pastpapers/) | [`revisionhub-pastpapers-v0.1.0`](../../releases/tag/revisionhub-pastpapers-v0.1.0) | Your own RevisionHub/Clerk session; renewal from Search.app on macOS |
-| **IB Docs past papers** | [`ibdocs-pastpapers/`](./ibdocs-pastpapers/) | [`ibdocs-pastpapers-v0.1.0`](../../releases/tag/ibdocs-pastpapers-v0.1.0) | None — ibdocs.re is public |
+| **RevisionHub past papers** | [`revisionhub-pastpapers/`](./revisionhub-pastpapers/) | [`revisionhub-pastpapers-v0.1.0`](https://github.com/Akuisovo/learnharness-extension/releases/tag/revisionhub-pastpapers-v0.1.0) | Your own RevisionHub/Clerk session; renewal from Search.app on macOS |
+| **IB Docs past papers** | [`ibdocs-pastpapers/`](./ibdocs-pastpapers/) | [`ibdocs-pastpapers-v0.1.0`](https://github.com/Akuisovo/learnharness-extension/releases/tag/ibdocs-pastpapers-v0.1.0) | None — ibdocs.re is public |
 
 Both target LearnHarness `0.6.1+` and plugin API v1.
 
