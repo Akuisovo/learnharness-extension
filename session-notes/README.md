@@ -12,9 +12,14 @@ by session or by knowledge-web topic/node, and supports full-text search.
 - **Add from a session.** In a teaching or practice session, use the top-bar
   **Add to notes** action. It opens a plugin-owned overlay that mirrors the
   current session's content:
-  - highlight text and **right-click → Add to note** to capture the selection, or
-  - click the small note icon beside any rendered block (text, table, diagram,
-    or code) to add that whole block.
+  - highlight text **inside this overlay** and **right-click → Add to note** to
+    capture the selection. A capture-phase listener plus a tracked selection keep
+    this working even if the host intercepts right-click; the **Add selection to
+    note** button in the overlay header is an always-available equivalent.
+  - click the small note icon on the left of any rendered block. Icons are placed
+    beside every table, Mermaid diagram, code block and image the host actually
+    renders — including ones from tool outputs — by inspecting the rendered DOM,
+    not just Markdown text. Tables keep their structure; diagrams keep their source.
   A captured block can be appended to an existing note or used to create a new
   one. **Save whole session** stores every block in one note.
 - **Organisation.** Switch between **By session**, **By topic**, and **By

@@ -26,68 +26,192 @@ function lifetime(...parents) {
   return controller;
 }
 
-/** Split Markdown into capturable blocks: text, tables, diagrams and code. */
-function splitMarkdown(input) {
-  const lines = String(input || '').replace(/\r\n?/g, '\n').split('\n');
+const DIAGRAM_LANGS = new Set(['mermaid', 'graph', 'flowchart', 'sequence', 'class', 'gantt', 'pie', 'state', 'er', 'timeline', 'mindmap']);
+const TEXT_KEYS = new Set(['text', 'markdown', 'content', 'output', 'data', 'result', 'details', 'source', 'chart', 'code', 'value', 'answer', 'question', 'statement', 'partial']);
+const SKIP_KEYS = new Set(['id', 'type', 'role', 'state', 'toolCallId', 'sourceMessageId', 'sourceContentIndex', 'mimeType', 'snapshotId', 'path', 'url', 'name']);
+
+/** Flatten prose into text blocks and consecutive pipe/grid/ASCII table rows into table blocks. */
+function splitProse(chunk) {
+  const lines = String(chunk || '').replace(/\r\n?/g, '\n').split('\n');
   const blocks = [];
-  let buffer = [], mode = 'text', fenceLang = '';
-  const flush = type => {
+  let buffer = [], mode = 'text';
+  const isSeparator = line => /^\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line) || /^\s*[+=]={2,}[+=](\s*[+=])*$/.test(line);
+  const isTableLine = line => (line.match(/\|/g) || []).length >= 1 || /^\s*[+][-=+]+[+]/.test(line) || isSeparator(line);
+  const flush = () => {
     const markdown = buffer.join('\n').trim();
     buffer = [];
-    if (markdown) blocks.push({ type, markdown: markdown.slice(0, 8000), caption: '' });
+    if (markdown) blocks.push({ type: mode, markdown: markdown.slice(0, 12000), caption: '' });
   };
-  for (const line of lines) {
-    const fence = /^\s*```\s*([A-Za-z0-9_-]*)/.exec(line);
-    if (mode === 'text' && fence) {
-      flush('text');
-      mode = 'fence';
-      fenceLang = (fence[1] || '').toLowerCase();
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (!line.trim()) { flush(); mode = 'text'; continue; }
+    const tableLine = isTableLine(line) || (isSeparator(lines[index + 1] || '') && (line.match(/\|/g) || []).length >= 1);
+    if (tableLine) {
+      if (mode !== 'table') { flush(); mode = 'table'; }
       buffer.push(line);
       continue;
     }
-    if (mode === 'fence') {
-      buffer.push(line);
-      if (/^\s*```\s*$/.test(line)) {
-        const diagramLangs = new Set(['mermaid', 'graph', 'flowchart', 'sequence', 'class', 'gantt', 'pie', 'state', 'er']);
-        flush(diagramLangs.has(fenceLang) ? 'diagram' : fenceLang ? 'code' : 'text');
-        mode = 'text';
-      }
-      continue;
-    }
-    if (/^\s*\|.*\|\s*$/.test(line)) {
-      if (mode !== 'table') { flush('text'); mode = 'table'; }
-      buffer.push(line);
-      continue;
-    }
-    if (mode === 'table') { flush('table'); mode = 'text'; }
-    if (!line.trim()) { flush(mode); mode = 'text'; continue; }
+    if (mode === 'table') { flush(); mode = 'text'; }
     buffer.push(line);
   }
-  flush(mode === 'fence' ? 'text' : mode);
-  return blocks.slice(0, 80);
+  flush();
+  return blocks;
 }
 
-/** Build capture blocks from the detached session view supplied to a top-bar action. */
-function blocksFromView(view) {
+/** Split Markdown into capturable blocks: text, tables, diagrams and code.
+ * Handles backtick/tilde fences, HTML tables and LaTeX tabular/array blocks. */
+export function splitMarkdown(input) {
+  const text = String(input || '').replace(/\r\n?/g, '\n');
+  const special = /```([^\n`]*)\n([\s\S]*?)```|~~~([^\n~]*)\n([\s\S]*?)~~~|<table\b[\s\S]*?<\/table>|\\begin\{(?:tabular|array|longtable)\*?\}[\s\S]*?\\end\{(?:tabular|array|longtable)\*?\}/gi;
   const blocks = [];
+  let cursor = 0, match;
+  while ((match = special.exec(text))) {
+    blocks.push(...splitProse(text.slice(cursor, match.index)));
+    const raw = match[0];
+    let type = 'text';
+    if (/^<table/i.test(raw) || /^\\begin/i.test(raw)) type = 'table';
+    else {
+      const lang = (match[1] ?? match[3] ?? '').trim().split(/\s+/)[0].toLowerCase();
+      type = DIAGRAM_LANGS.has(lang) ? 'diagram' : lang ? 'code' : 'text';
+    }
+    blocks.push({ type, markdown: raw.slice(0, 12000), caption: '' });
+    cursor = match.index + raw.length;
+  }
+  blocks.push(...splitProse(text.slice(cursor)));
+  return blocks.filter(block => block.markdown).slice(0, 80);
+}
+
+/** Recursively collect Markdown-bearing strings from a transcript part's payload.
+ * Tool outputs and structured `data` fields often hold tables/diagrams that are
+ * not present in `part.text`, so they must be scanned too. */
+export function collectSources(part, out = [], depth = 0) {
+  if (!part || depth > 6 || out.length > 40) return out;
+  if (typeof part === 'string') {
+    if (part.trim()) out.push(part);
+    return out;
+  }
+  if (Array.isArray(part)) {
+    for (const item of part) collectSources(item, out, depth + 1);
+    return out;
+  }
+  if (typeof part !== 'object') return out;
+  for (const [key, value] of Object.entries(part)) {
+    if (SKIP_KEYS.has(key)) continue;
+    if (TEXT_KEYS.has(key)) {
+      if (typeof value === 'string') { if (value.trim()) out.push(value); continue; }
+      if (value && typeof value === 'object') { collectSources(value, out, depth + 1); continue; }
+    }
+    if (key === 'parts' || key === 'messages' || key === 'message' || key === 'result' || key === 'output' || key === 'data') {
+      collectSources(value, out, depth + 1);
+    }
+  }
+  return out;
+}
+
+/** Build capture sources from the detached session view supplied to a top-bar action. */
+export function sourceStrings(view) {
+  const sources = [];
+  const add = value => {
+    const collected = collectSources(value);
+    for (const item of collected) if (!sources.includes(item)) sources.push(item);
+  };
   const transcript = Array.isArray(view?.transcript) ? view.transcript : [];
   for (const msg of transcript) {
     const parts = Array.isArray(msg?.parts) ? msg.parts : [];
-    for (const part of parts) {
-      if (typeof part?.text === 'string' && part.text.trim()) blocks.push(...splitMarkdown(part.text));
-    }
+    for (const part of parts) add(part);
   }
-  if (!blocks.length && Array.isArray(view?.messages)) {
-    for (const msg of view.messages) {
-      const content = msg?.message?.content ?? msg?.content;
-      if (Array.isArray(content)) {
-        for (const part of content) if (typeof part?.text === 'string' && part.text.trim()) blocks.push(...splitMarkdown(part.text));
-      } else if (typeof content === 'string' && content.trim()) {
-        blocks.push(...splitMarkdown(content));
-      }
-    }
+  if (!sources.length && Array.isArray(view?.messages)) {
+    for (const msg of view.messages) add(msg?.message ?? msg?.content ?? msg);
   }
-  return blocks.slice(0, 80);
+  return sources.slice(0, 40);
+}
+
+export function blocksFromView(view) {
+  const blocks = [];
+  for (const source of sourceStrings(view)) blocks.push(...splitMarkdown(source));
+  return blocks.slice(0, 120);
+}
+
+/** Convert a rendered host table into Markdown so it renders as a table in a note. */
+export function tableToMarkdown(table) {
+  const rows = [...(table.querySelectorAll?.('tr') ?? [])];
+  if (!rows.length) return table.outerHTML || '';
+  const cells = row => [...(row.querySelectorAll?.('th,td') ?? [])]
+    .map(cell => String(cell.textContent || '').replace(/\s*\n\s*/g, ' ').replace(/\|/g, '\\|').trim());
+  const headerRow = table.querySelector?.('thead tr') || rows[0];
+  const header = cells(headerRow);
+  const width = Math.max(header.length, ...rows.map(row => cells(row).length));
+  const pad = row => { const padded = [...row]; while (padded.length < width) padded.push(''); return padded; };
+  const lines = [`| ${pad(header).join(' | ')} |`, `| ${header.map(() => '---').join(' | ')} |`];
+  for (const row of rows) {
+    if (row === headerRow) continue;
+    const values = cells(row);
+    if (values.every(value => !value)) continue;
+    lines.push(`| ${pad(values).join(' | ')} |`);
+  }
+  return lines.join('\n');
+}
+
+/** Elements the host Markdown renderer actually produces for tables/diagrams/code. */
+export const CAPTURE_SELECTOR = 'table, [data-testid="md-mermaid"], [data-streamdown="mermaid"], [data-streamdown="code-block"], pre, svg, img[data-streamdown="image"]';
+
+/** Ignore nested matches (e.g. an <svg> inside a mermaid block) so each capture gets one icon. */
+export function topLevelCaptures(slot) {
+  const nodes = [...(slot?.querySelectorAll?.(CAPTURE_SELECTOR) ?? [])];
+  return nodes.filter(node => !nodes.some(other => other !== node && other.contains(node)));
+}
+
+export function fenceSources(source, wantDiagram) {
+  const re = /```([^\n`]*)\n([\s\S]*?)```|~~~([^\n~]*)\n([\s\S]*?)~~~/g;
+  const results = [];
+  let match;
+  while ((match = re.exec(String(source || '')))) {
+    const lang = (match[1] ?? match[3] ?? '').trim().split(/\s+/)[0].toLowerCase();
+    const isDiagram = DIAGRAM_LANGS.has(lang);
+    if (wantDiagram ? isDiagram : !isDiagram && !!lang) results.push({ lang, markdown: match[0] });
+  }
+  return results;
+}
+
+function captureKind(node) {
+  if (node.matches?.('table')) return 'table';
+  if (node.matches?.('[data-testid="md-mermaid"], [data-streamdown="mermaid"]')) return 'diagram';
+  if (node.matches?.('[data-streamdown="code-block"], pre')) return 'code';
+  return 'image';
+}
+
+/** Capture content from a host-rendered element, preferring the original source. */
+export function captureFromElement(node, source, nodes) {
+  const kind = captureKind(node);
+  const candidates = kind === 'diagram' || kind === 'code' ? fenceSources(source, kind === 'diagram') : [];
+  const sameKind = nodes.filter(other => captureKind(other) === kind);
+  const pick = candidates[Math.max(0, sameKind.indexOf(node))] ?? candidates[0];
+  let markdown = pick?.markdown;
+  if (!markdown) {
+    if (kind === 'table') markdown = tableToMarkdown(node);
+    else if (kind === 'image') markdown = `\`\`\`html\n${node.outerHTML || node.textContent || ''}\n\`\`\``;
+    else markdown = `\`\`\`${pick?.lang || ''}\n${node.textContent || ''}\n\`\`\``;
+  }
+  const type = kind === 'table' ? 'table' : kind === 'image' ? 'diagram' : kind;
+  const caption = kind === 'table' ? 'Table' : kind === 'diagram' ? 'Diagram' : kind === 'code' ? 'Code' : 'Image';
+  return { type, markdown: String(markdown).slice(0, 12000), caption };
+}
+
+/** Read a selection from every relevant DOM scope, including shadow roots. */
+export function readSelection(target, fallbackRoot) {
+  const scopes = new Set();
+  if (fallbackRoot) scopes.add(fallbackRoot.getRootNode?.() ?? fallbackRoot.ownerDocument ?? fallbackRoot);
+  if (typeof Node !== 'undefined' && target instanceof Node) scopes.add(target.getRootNode?.());
+  if (globalThis.document) scopes.add(globalThis.document);
+  let best = '';
+  for (const scope of scopes) {
+    try {
+      const selection = scope?.getSelection?.() ?? globalThis.getSelection?.();
+      const value = (selection?.toString?.() || '').trim();
+      if (value.length > best.length) best = value;
+    } catch { /* ignore scopes that cannot expose a selection */ }
+  }
+  return best.slice(0, 8000);
 }
 
 const localMatch = (note, query) => {
@@ -213,8 +337,68 @@ export function activate(ctx) {
   function openSessionOverlay(context) {
     if (context?.surface !== 'session' || ctx.signal.aborted) return;
     const session = { sessionId: context.sessionId || '', sessionTitle: context.view?.title || context.sessionId || '' };
+    const sources = sourceStrings(context.view);
     const blocks = blocksFromView(context.view);
     const scope = lifetime(ctx.signal);
+
+    /** Mount a small note icon that adds a captured block via the shared menu. */
+    function noteIcon(parent, block, signal, label) {
+      const slot = el('span', 'sn-capture-icon');
+      parent.append(slot);
+      return widget(ctx.ui.mountButton(slot, {
+        label, icon: addNoteIcon, iconOnly: true, size: 'icon-sm', variant: 'ghost', title: label,
+        onClick: () => addToNoteFlow(slot, block, signal, session),
+      }, { signal }), signal);
+    }
+
+    /** Put an icon beside every table/diagram/code element the host actually renders.
+     * We never move host-rendered nodes: React owns them. Icons are absolutely
+     * positioned siblings, recomputed as async diagrams finish rendering. */
+    function decorateCaptures(slot, source, signal) {
+      const icons = new Map();
+      const place = () => {
+        const slotRect = slot.getBoundingClientRect();
+        for (const [node, icon] of icons) {
+          if (!node.isConnected) { icon.remove(); icons.delete(node); continue; }
+          const rect = node.getBoundingClientRect();
+          icon.style.top = `${Math.max(0, rect.top - slotRect.top + 2)}px`;
+        }
+      };
+      const scan = () => {
+        if (signal.aborted) return;
+        if (slot.style.position !== 'relative') {
+          slot.style.position = 'relative';
+          slot.style.paddingLeft = '2.1rem';
+        }
+        const nodes = topLevelCaptures(slot);
+        for (const node of nodes) {
+          if (icons.has(node)) continue;
+          const block = captureFromElement(node, source, nodes);
+          if (!block?.markdown) continue;
+          const icon = el('button', 'sn-inline-note-icon');
+          icon.type = 'button';
+          icon.title = `Add ${block.caption} to note`;
+          icon.setAttribute('aria-label', icon.title);
+          icon.innerHTML = addNoteIcon;
+          icon.addEventListener('click', event => {
+            event.stopPropagation();
+            void addToNoteFlow(icon, block, signal, session);
+          }, { signal });
+          slot.append(icon);
+          icons.set(node, icon);
+        }
+        place();
+        globalThis.requestAnimationFrame?.(place);
+      };
+      scan();
+      if (typeof MutationObserver !== 'undefined') {
+        const observer = new MutationObserver(scan);
+        observer.observe(slot, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'class', 'data-testid'] });
+        signal.addEventListener('abort', () => observer.disconnect(), { once: true });
+      }
+      globalThis.addEventListener?.('resize', place, { signal });
+    }
+
     const props = {
       title: 'Add to notes',
       background: 'opaque',
@@ -224,9 +408,9 @@ export function activate(ctx) {
         container.append(root);
         const head = el('div', 'sn-overlay-head');
         head.append(el('h2', 'sn-title', `Add to notes — ${session.sessionTitle || 'Session'}`));
-        head.append(el('span', 'sn-hint', blocks.length
-          ? 'Highlight text then right-click, or use a note icon beside any block.'
-          : 'No capturable text was found in this session.'));
+        head.append(el('span', 'sn-hint', sources.length
+          ? 'Select text here, then right-click → Add to note (or use “Add selection to note” above). Every table and diagram has its own note icon on its left.'
+          : 'No capturable content was found in this session.'));
         button(head, 'Save whole session', async () => {
           await mutate('create-note', {
             title: `Session — ${session.sessionTitle || 'Untitled'}`,
@@ -234,32 +418,54 @@ export function activate(ctx) {
             kind: context.view?.kind === 'practice' ? 'practice' : 'teaching', blocks,
           }, signal);
         }, signal);
+
+        // Always-available fallback for selection capture if a right-click is intercepted.
+        let lastSelection = '';
+        const selectionButton = button(head, 'Add selection to note', async () => {
+          const selected = readSelection(root, root) || lastSelection;
+          if (!selected) return;
+          await addToNoteFlow(head, { type: 'text', markdown: selected, caption: 'Selected text' }, signal, session);
+        }, signal, { disabled: true });
         root.append(head);
+
         const scroll = el('div', 'sn-overlay-scroll');
         root.append(scroll);
-        for (const [index, block] of blocks.entries()) {
-          const row = el('div', 'sn-capture-row');
-          const iconSlot = el('span', 'sn-capture-icon');
-          row.append(iconSlot);
+        for (const [index, source] of sources.entries()) {
+          const row = el('div', 'sn-source-row');
+          const sourceHead = el('div', 'sn-source-head');
+          sourceHead.append(el('span', 'sn-capture-kind', `Message ${index + 1}`));
+          row.append(sourceHead);
           const body = el('div', 'sn-capture-body');
-          body.append(el('div', 'sn-capture-kind', block.type === 'table' ? 'Table' : block.type === 'diagram' ? 'Diagram' : block.type === 'code' ? 'Code' : 'Text'));
-          markdown(body, block.markdown, signal);
+          markdown(body, source, signal);
           row.append(body);
           scroll.append(row);
-          widget(ctx.ui.mountButton(iconSlot, {
-            label: `Add block ${index + 1} to note`, icon: addNoteIcon, iconOnly: true,
-            size: 'icon-sm', variant: 'ghost', title: 'Add this block to a note',
-            onClick: () => addToNoteFlow(iconSlot, block, signal, session),
-          }, { signal }), signal);
+          noteIcon(sourceHead, { type: 'text', markdown: source.slice(0, 12000), caption: 'Message' }, signal, `Add message ${index + 1} to note`);
+          decorateCaptures(body, source, signal);
         }
-        // Selection-based right-click capture inside this plugin-owned overlay only.
-        root.addEventListener('contextmenu', event => {
-          const selected = (globalThis.getSelection?.()?.toString?.() || '').trim();
-          if (!selected) return; // preserve the host's native menu for ordinary right-clicks
+
+        const rememberSelection = () => {
+          if (signal.aborted) return;
+          const selected = readSelection(root, root);
+          if (selected) lastSelection = selected;
+          selectionButton.update({ disabled: !selected });
+        };
+        document.addEventListener('mouseup', rememberSelection, { capture: true, signal });
+        document.addEventListener('keyup', rememberSelection, { capture: true, signal });
+        document.addEventListener('selectionchange', rememberSelection, { signal });
+
+        // Capture-phase listener so the host's own handlers cannot swallow the event.
+        document.addEventListener('contextmenu', event => {
+          if (signal.aborted) return;
+          const path = event.composedPath?.() ?? [];
+          if (!path.includes(root) && !root.contains(event.target)) return;
+          const selected = readSelection(event.target, root) || lastSelection;
+          if (!selected) return; // leave the native menu alone unless text is selected
           event.preventDefault();
-          const anchor = event.target instanceof HTMLElement ? event.target : root;
-          void addToNoteFlow(anchor, { type: 'text', markdown: selected.slice(0, 8000), caption: 'Selected text' }, signal, session);
-        }, { signal });
+          event.stopPropagation();
+          const anchor = path.find(node => node instanceof HTMLElement && root.contains(node))
+            || (event.target instanceof HTMLElement ? event.target : root);
+          void addToNoteFlow(anchor, { type: 'text', markdown: selected, caption: 'Selected text' }, signal, session);
+        }, { capture: true, signal });
       },
     };
     const options = { signal: ctx.signal };
