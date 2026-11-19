@@ -176,8 +176,9 @@ test('regionToBlock reproduces tables, diagrams, code and text', () => {
   const header = row([cell('A'), cell('B')]);
   const data = row([cell('1'), cell('2')]);
   const table = {
+    matches: selector => selector === 'table',
     querySelectorAll: selector => selector === 'tr' ? [header, data] : [],
-    querySelector: () => header,
+    querySelector: selector => selector === 'thead tr' ? header : null,
     outerHTML: '<table></table>',
   };
   assert.match(regionToBlock({ type: 'table', node: table }).markdown, /\| A \| B \|/);

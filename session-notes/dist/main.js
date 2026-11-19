@@ -341,7 +341,9 @@ export function regionToBlock(region, mermaidSources = []) {
   const node = region.node;
   const type = region.type || regionType(node);
   if (type === 'table') {
-    return { type: 'table', markdown: tableToMarkdown(node), caption: 'Table' };
+    const inner = !node.matches?.('table') && node.tagName !== 'TABLE' ? node.querySelector?.('table') : null;
+    const table = inner || node;
+    return { type: 'table', markdown: tableToMarkdown(table), caption: 'Table' };
   }
   if (type === 'diagram') {
     if (region.isImage || node.matches?.('[data-streamdown="image-wrapper"], img[data-streamdown="image"], [data-testid="submitted-images"] img')) {
@@ -360,11 +362,12 @@ export function regionToBlock(region, mermaidSources = []) {
     return { type: 'diagram', markdown, caption: 'Diagram' };
   }
   if (type === 'code') {
-    const language = node.getAttribute?.('data-language') || '';
+    const language = node.getAttribute?.('data-language')
+      || node.querySelector?.('[data-language]')?.getAttribute?.('data-language') || '';
     const code = node.querySelector?.('code')?.textContent || node.textContent || '';
     return { type: 'code', markdown: `\`\`\`${language}\n${String(code).trim()}\n\`\`\``, caption: 'Code' };
   }
-  const markdown = String(node.innerText || node.textContent || '').trim();
+  const markdown = String(node.innerText || node.textContent || '').replace(/\u00A0/g, ' ').trim();
   return { type: 'text', markdown, caption: 'Text' };
 }
 
@@ -477,9 +480,14 @@ export function activate(ctx) {
         key: `note:${note.id}`,
         label: single ? `Add to ${note.title || 'Untitled note'}` : `Add ${count} ${noun} to ${note.title || 'Untitled note'}`,
         onSelect: async () => {
-          if (single) await mutate('add-block', { id: note.id, block: picked[0] }, signal);
-          else await mutate('add-blocks', { id: note.id, blocks: picked }, signal);
-          options.onDone?.();
+          try {
+            if (single) await mutate('add-block', { id: note.id, block: picked[0] }, signal);
+            else await mutate('add-blocks', { id: note.id, blocks: picked }, signal);
+            options.onSaved?.(count, note.title || 'note');
+            options.onDone?.();
+          } catch (error) {
+            options.onError?.(message(error));
+          }
         },
       }));
       const typeTitle = { table: 'Table note', diagram: 'Diagram note', code: 'Code note' }[picked[0]?.type] || 'Session note';
@@ -487,17 +495,25 @@ export function activate(ctx) {
         key: 'new',
         label: single ? 'New note with this' : `New note with ${count} ${noun}`,
         onSelect: async () => {
-          await mutate('create-note', {
-            title: single ? typeTitle : `Session — ${session.sessionTitle || 'Untitled'}`,
-            text: '', sessionId: session.sessionId || '', sessionTitle: session.sessionTitle || '',
-            kind: session.kind || 'teaching', blocks: picked,
-          }, signal);
-          options.onDone?.();
+          try {
+            await mutate('create-note', {
+              title: single ? typeTitle : `Session — ${session.sessionTitle || 'Untitled'}`,
+              text: '', sessionId: session.sessionId || '', sessionTitle: session.sessionTitle || '',
+              kind: session.kind || 'teaching', blocks: picked,
+            }, signal);
+            options.onSaved?.(count, single ? typeTitle : 'new note');
+            options.onDone?.();
+          } catch (error) {
+            options.onError?.(message(error));
+          }
         },
       });
       if (!signal.aborted) ctx.ui.openMenu(anchor, { label: 'Add to note', items }, { signal });
     } catch (error) {
-      if (!signal.aborted) console.error('[session-notes] add to note failed:', message(error));
+      if (!signal.aborted) {
+        console.error('[session-notes] add to note failed:', message(error));
+        options.onError?.(message(error));
+      }
     }
   }
 
@@ -697,7 +713,7 @@ export function activate(ctx) {
 
         let regions = [], boxes = new Map(), selected = new Set(), layoutQueued = false, dragMoved = false;
         let start = null, canvasBase = null;
-        let rawHits = 0, clickCount = 0, scopeLabel = '?', detectError = '';
+        let rawHits = 0, clickCount = 0, scopeLabel = '?', detectError = '', notice = '';
 
         const setSelected = (region, on) => {
           if (on) selected.add(region);
@@ -705,9 +721,10 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          status.textContent = `v0.1.6 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          status.textContent = `v0.1.7 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           debug.textContent = `debug · scope=${scopeLabel} found=${rawHits} clicks=${clickCount}`
-            + (detectError ? ` · error: ${detectError}` : '');
+            + (detectError ? ` · error: ${detectError}` : '')
+            + (notice ? ` · ${notice}` : '');
           addHandle.update({ disabled: !selected.size });
         };
         const layout = () => {
@@ -788,15 +805,20 @@ export function activate(ctx) {
           detectError = '';
           for (const box of boxes.values()) box.remove();
           boxes = new Map();
-          // The main transcript is the find-root inside role="log". A question
-          // dock can also carry data-session-find-root; querying only the first
-          // match in document order could pick the wrong subtree on some sessions.
+          // The main transcript is usually [role="log"] with one or more
+          // [data-session-find-root] descendants. Some sessions expose question
+          // docks or alternate layouts, so include every plausible root.
           const log = document.querySelector('[role="log"]');
-          const logRoots = log ? [...log.querySelectorAll('[data-session-find-root]')] : [];
-          let roots = logRoots.length ? logRoots : [...document.querySelectorAll('[data-session-find-root]')];
-          if (!roots.length && log) roots = [log];
+          const allFindRoots = [...document.querySelectorAll('[data-session-find-root]')];
+          const logRoots = log ? allFindRoots.filter(root => log.contains(root)) : [];
+          const bodyRoot = document.querySelector('[data-session-body]');
+          let roots = [];
+          if (logRoots.length) roots.push(...logRoots);
+          else if (log) roots.push(log);
+          for (const root of allFindRoots) if (!roots.includes(root)) roots.push(root);
+          if (bodyRoot && !roots.includes(bodyRoot)) roots.push(bodyRoot);
           scopeLabel = roots.length
-            ? (logRoots.length ? `log/find-root×${roots.length}` : 'find-root')
+            ? `${log ? 'log' : 'doc'}/roots×${roots.length}`
             : 'no-transcript';
           const selectorNodes = [];
           for (const root of roots) selectorNodes.push(...root.querySelectorAll(REGION_SELECTOR));
@@ -819,11 +841,27 @@ export function activate(ctx) {
         const addHandle = widget(ctx.ui.mountButton(addSlot, {
           label: 'Add selected to notes', size: 'sm', variant: 'outline', disabled: true,
           onClick: async () => {
+            notice = '';
             const chosen = [...selected]
               .map(region => regionToBlock(region, mermaidSources))
               .filter(block => block.markdown && block.markdown.trim());
-            if (!chosen.length || signal.aborted) return;
+            if (signal.aborted) return;
+            if (!chosen.length) {
+              notice = 'nothing capturable in selection (empty text)';
+              updateStatus();
+              return;
+            }
+            notice = `prepared ${chosen.length} block(s)… choose a note`;
+            updateStatus();
             await addBlocksFlow(addSlot, chosen, signal, session, {
+              onSaved: (count, title) => {
+                notice = `saved ${count} block(s) to ${title}`;
+                updateStatus();
+              },
+              onError: err => {
+                notice = `save failed: ${err}`;
+                updateStatus();
+              },
               onDone: () => {
                 for (const region of selected) boxes.get(region)?.classList.remove('is-selected');
                 selected = new Set();
