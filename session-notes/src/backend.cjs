@@ -1,4 +1,6 @@
 'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { openStore } = require('./store.cjs');
 
@@ -50,10 +52,23 @@ function activate(ctx) {
     fail('This app build does not provide the plugin capabilities required by Notes.');
   }
   const store = openStore(ctx.dataDirectory);
+  const logFile = path.join(ctx.dataDirectory, 'session-notes-debug.log');
   let disposed = false;
   const alive = () => { if (disposed || ctx.signal?.aborted) fail('Notes is disabled.'); };
   const notify = (topic = 'changed') => { if (!disposed && !ctx.signal?.aborted) ctx.events.emit(topic); };
   const change = update => { alive(); const result = store.change(update); notify(); return result; };
+
+  function appendLog(input = {}) {
+    try {
+      const entry = {
+        ts: stamp(),
+        level: typeof input.level === 'string' ? input.level.slice(0, 20) : 'info',
+        event: typeof input.event === 'string' ? input.event.slice(0, 120) : 'event',
+        data: input.data && typeof input.data === 'object' ? input.data : {},
+      };
+      fs.appendFileSync(logFile, JSON.stringify(entry) + '\n');
+    } catch { /* debug logging must never break the plugin */ }
+  }
 
   /** Fresh, read-only view of native sessions and the knowledge web. */
   function catalog() {
@@ -93,11 +108,27 @@ function activate(ctx) {
 
   function register(name, handler) {
     ctx.handle(name, input => {
-      alive();
-      if (input !== undefined && (!input || typeof input !== 'object' || Array.isArray(input))) fail('Invalid operation input.');
-      return handler(input ?? {});
+      try {
+        alive();
+        if (input !== undefined && (!input || typeof input !== 'object' || Array.isArray(input))) fail('Invalid operation input.');
+        const result = handler(input ?? {});
+        if (name === 'create-note' || name === 'add-block' || name === 'add-blocks' || name === 'delete-note' || name === 'clear-notes') {
+          appendLog({ event: 'backend', data: { operation: name, ok: true } });
+        }
+        return result;
+      } catch (error) {
+        appendLog({ level: 'error', event: 'backend-error', data: { operation: name, message: String(error?.message || error) } });
+        throw error;
+      }
     });
   }
+
+  ctx.handle('append-log', input => {
+    if (input !== undefined && (!input || typeof input !== 'object' || Array.isArray(input))) return { ok: false };
+    appendLog(input ?? {});
+    return { ok: true, path: logFile };
+  });
+  ctx.handle('get-log-info', () => ({ path: logFile }));
 
   register('get-state', () => {
     const s = store.get();

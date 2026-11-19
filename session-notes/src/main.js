@@ -295,6 +295,7 @@ function regionPriority(node) {
 
 /** Skip hidden/collapsed nodes so they never become zero-size, unclickable boxes. */
 function regionVisible(node) {
+  if (node.matches?.('[data-session-find-root], [role="log"], [data-session-body]')) return false;
   const rect = node.getBoundingClientRect?.();
   if (rect && (rect.width < 2 || rect.height < 2)) return false;
   const style = globalThis.getComputedStyle?.(node);
@@ -316,7 +317,14 @@ export function findRegions(...scopes) {
   }
   const unique = [...new Set(nodes)]
     .filter(node => !node.closest?.('[data-plugin-session-surface], [data-session-surface-mounts]'))
-    .filter(regionVisible);
+    .filter(regionVisible)
+    .filter(node => {
+      if (node.matches?.(HIGH_PRIORITY)) return true;
+      // Drop giant wrappers that span multiple transcript units; they make the
+      // whole session appear as one unpickable block.
+      const count = node.querySelectorAll?.('[data-source-message-id], [data-testid="user-message"], [data-testid="md-mermaid"], [data-streamdown="mermaid"], table, [data-streamdown="code-block"], [data-testid="tool-call-card"]').length || 0;
+      return count < 3;
+    });
   const info = unique.map(node => ({ node, type: regionType(node), priority: regionPriority(node) }));
   const kept = info.filter(({ node, priority }) => !info.some(other =>
     other.node !== node && (
@@ -394,8 +402,21 @@ export function activate(ctx) {
       throw new Error(`Session Notes requires a newer LearnHarness host with ctx.ui.${capability}. Please update LearnHarness.`);
     }
   }
-  let snapshot = null, catalogCache = null, refreshing = null, refreshAgain = false;
+  let snapshot = null, catalogCache = null, refreshing = null, refreshAgain = false, logPath = '';
   const observers = new Set(), registrations = [];
+  const safeData = value => {
+    try { return JSON.parse(JSON.stringify(value)); } catch { return { note: 'unserializable' }; }
+  };
+  const logEvent = (event, data = {}, level = 'info') => {
+    const payload = { level, event, data: safeData(data) };
+    try { console.debug('[session-notes]', event, payload.data); } catch {}
+    try { void ctx.call('append-log', payload).then(result => { if (result?.path) logPath = result.path; }); } catch {}
+  };
+  void ctx.call('get-log-info').then(result => { logPath = result?.path || ''; logEvent('frontend-ready', { logPath }); }).catch(() => {});
+  if (typeof globalThis.addEventListener === 'function') {
+    globalThis.addEventListener('error', event => logEvent('window-error', { message: String(event?.message || event?.error || 'error') }, 'error'), { signal: ctx.signal });
+    globalThis.addEventListener('unhandledrejection', event => logEvent('unhandledrejection', { message: String(event?.reason?.message || event?.reason || 'rejection') }, 'error'), { signal: ctx.signal });
+  }
   const publish = value => {
     if (!value || ctx.signal.aborted || (snapshot && value.revision < snapshot.revision)) return;
     snapshot = value;
@@ -725,10 +746,12 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          status.textContent = `v0.1.8 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          status.textContent = `v0.1.9 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
           debug.textContent = `debug · scope=${scopeLabel} found=${rawHits} clicks=${clickCount}`
             + (detectError ? ` · error: ${detectError}` : '')
-            + (notice ? ` · ${notice}` : '');
+            + (notice ? ` · ${notice}` : '')
+            + logHint;
           addHandle.update({ disabled: !selected.size });
         };
         const layout = () => {
@@ -814,7 +837,9 @@ export function activate(ctx) {
           box.addEventListener('click', event => {
             event.stopPropagation();
             clickCount += 1;
-            setSelected(region, !selected.has(region));
+            const on = !selected.has(region);
+            setSelected(region, on);
+            logEvent('region-click', { on, type: region.type, label: region.label, tag: region.node?.tagName?.toLowerCase?.() || '', preview: String(region.node?.innerText || region.node?.textContent || '').slice(0, 120) });
             updateStatus();
           }, { signal });
           canvas.append(box);
@@ -850,11 +875,17 @@ export function activate(ctx) {
             hitNodes = hitTestRegions(roots);
           } catch (error) {
             detectError = String(error?.message || error);
+            logEvent('hit-test-error', { message: detectError }, 'error');
           }
           rawHits = new Set([...selectorNodes, ...hitNodes]).size;
           regions = findRegions(...roots, hitNodes);
           for (const region of regions) addBox(region);
           layout();
+          logEvent('detect', {
+            sessionId: session.sessionId, scope: scopeLabel, roots: roots.length,
+            selectorNodes: selectorNodes.length, hitNodes: hitNodes.length, rawHits, regions: regions.length,
+            sample: regions.slice(0, 8).map(r => ({ type: r.type, label: r.label, tag: r.node?.tagName?.toLowerCase?.() || '', text: String(r.node?.innerText || r.node?.textContent || '').slice(0, 80) })),
+          });
           // The frame can still be sizing when content mounts. Always re-layout,
           // even when regions were found, because boxes may be positioned wrongly.
           globalThis.requestAnimationFrame?.(queueLayout);
@@ -865,9 +896,15 @@ export function activate(ctx) {
           label: 'Add selected to notes', size: 'sm', variant: 'outline', disabled: true,
           onClick: async () => {
             notice = '';
-            const chosen = [...selected]
-              .map(region => regionToBlock(region, mermaidSources))
-              .filter(block => block.markdown && block.markdown.trim());
+            const prepared = [...selected].map(region => ({ region, block: regionToBlock(region, mermaidSources) }));
+            const chosen = prepared.map(item => item.block).filter(block => block.markdown && block.markdown.trim());
+            logEvent('add-click', {
+              selected: selected.size, prepared: prepared.length, chosen: chosen.length,
+              blocks: prepared.map(({ region, block }) => ({
+                type: region.type, label: region.label, ok: !!(block.markdown && block.markdown.trim()),
+                len: String(block.markdown || '').length, preview: String(block.markdown || '').slice(0, 120),
+              })),
+            });
             if (signal.aborted) return;
             if (!chosen.length) {
               notice = 'nothing capturable in selection (empty text)';
@@ -879,10 +916,12 @@ export function activate(ctx) {
             await addBlocksFlow(addSlot, chosen, signal, session, {
               onSaved: (count, title) => {
                 notice = `saved ${count} block(s) to ${title}`;
+                logEvent('add-saved', { count, title });
                 updateStatus();
               },
               onError: err => {
                 notice = `save failed: ${err}`;
+                logEvent('add-error', { message: String(err) }, 'error');
                 updateStatus();
               },
               onDone: () => {
@@ -931,6 +970,7 @@ export function activate(ctx) {
         }, { signal });
         const finishDrag = () => {
           if (!start) return;
+          if (dragMoved) logEvent('drag-select', { selected: selected.size });
           for (const box of boxes.values()) box.classList.remove('is-drag');
           dragBox.hidden = true;
           dragBox.style.width = '0px';
@@ -952,7 +992,7 @@ export function activate(ctx) {
         globalThis.addEventListener?.('resize', queueLayout, { signal });
         document.addEventListener('scroll', queueLayout, { capture: true, signal });
 
-        refresh.addEventListener('click', detect, { signal });
+        refresh.addEventListener('click', () => { logEvent('refresh-click', {}); detect(); }, { signal });
         selectAll.addEventListener('click', () => {
           for (const region of regions) setSelected(region, true);
           updateStatus();
@@ -972,20 +1012,23 @@ export function activate(ctx) {
           pickMode = on;
           pick.classList.toggle('is-active', on);
           pick.textContent = on ? 'Click transcript…' : 'Pick element';
+          logEvent('pick-mode', { on });
         };
         document.addEventListener('click', event => {
           if (!pickMode || signal.aborted) return;
           event.preventDefault();
           event.stopPropagation();
           if (event.target.closest?.('[data-plugin-session-surface]')) {
+            logEvent('pick-cancelled', { reason: 'surface' });
             setPickMode(false);
             return;
           }
-          let node = event.target;
+          const clicked = event.target;
+          let node = clicked;
           while (node && node !== document.body && !node.matches?.(REGION_SELECTOR)) node = node.parentElement;
           if (!node || node === document.body || node.closest?.('[data-plugin-session-surface]')) {
             // Last resort: capture the clicked text block directly.
-            node = event.target;
+            node = clicked;
             while (node && node !== document.body) {
               const text = String(node.innerText || node.textContent || '').trim();
               if (text.length > 8 && !node.closest?.('[data-plugin-session-surface], button, [role="button"]')) break;
@@ -993,14 +1036,17 @@ export function activate(ctx) {
             }
           }
           if (node && node !== document.body && !node.closest?.('[data-plugin-session-surface]')) {
-            const region = findRegions({ querySelectorAll: () => [node] })[0] || {
+            const region = findRegions([node])[0] || {
               node, type: regionType(node), isImage: false, label: 'Text', diagramIndex: -1,
             };
             if (!boxes.has(region)) { regions.push(region); addBox(region); }
             setSelected(region, true);
             clickCount += 1;
             layout();
+            logEvent('pick-selected', { type: region.type, label: region.label, tag: node.tagName?.toLowerCase?.() || '', preview: String(node.innerText || node.textContent || '').slice(0, 120) });
             updateStatus();
+          } else {
+            logEvent('pick-missed', { tag: clicked?.tagName?.toLowerCase?.() || '' }, 'warn');
           }
           setPickMode(false);
         }, { capture: true, signal });
@@ -1015,6 +1061,7 @@ export function activate(ctx) {
           setPickMode(!pickMode);
         }, { signal });
 
+        logEvent('overlay-open', { sessionId: session.sessionId, sessionTitle: session.sessionTitle, kind: session.kind, mermaidSources: mermaidSources.length, logPath });
         detect();
       },
     };

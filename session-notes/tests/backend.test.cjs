@@ -35,9 +35,30 @@ function harness() {
 
 test('activate registers every documented operation', () => {
   const { handlers } = harness();
-  for (const name of ['get-state', 'get-catalog', 'get-note', 'create-note', 'save-note', 'add-block', 'add-blocks', 'delete-note', 'search-notes', 'save-settings', 'clear-notes']) {
+  for (const name of ['get-state', 'get-catalog', 'get-note', 'create-note', 'save-note', 'add-block', 'add-blocks', 'delete-note', 'search-notes', 'save-settings', 'clear-notes', 'append-log', 'get-log-info']) {
     assert.equal(typeof handlers.get(name), 'function', `missing ${name}`);
   }
+});
+
+test('append-log writes JSON lines and get-log-info reports the path', () => {
+  const { ctx, call } = harness();
+  assert.equal(call('append-log', { event: 'unit-test', data: { value: 7 } }).ok, true);
+  const info = call('get-log-info');
+  assert.match(info.path, /session-notes-debug\.log$/);
+  const lines = fs.readFileSync(info.path, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(lines.some(line => line.event === 'unit-test' && line.data.value === 7));
+  assert.ok(ctx.dataDirectory);
+});
+
+test('backend logs successful operations and errors', () => {
+  const { call } = harness();
+  const { note } = call('create-note', { title: 'Logged' });
+  call('add-block', { id: note.id, block: { type: 'text', markdown: 'hello' } });
+  assert.throws(() => call('add-block', { id: note.id, block: {} }), /block/i);
+  const logPath = call('get-log-info').path;
+  const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(lines.some(line => line.event === 'backend' && line.data.operation === 'create-note' && line.data.ok === true));
+  assert.ok(lines.some(line => line.event === 'backend-error' && line.data.operation === 'add-block'));
 });
 
 test('get-catalog exposes sessions, knowledge nodes and topic clusters', () => {

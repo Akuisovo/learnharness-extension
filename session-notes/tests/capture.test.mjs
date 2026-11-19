@@ -170,6 +170,20 @@ test('findRegions merges transcript roots with hit-tested nodes and drops hidden
   assert.ok(!regions.some(region => region.node === collapsed));
 });
 
+test('findRegions accepts an array of nodes and drops giant session wrappers', () => {
+  const make = (kind, childCount = 0) => ({
+    matches: value => value.split(', ').some(part => [kind].includes(part)),
+    contains: () => false,
+    closest: () => null,
+    getBoundingClientRect: () => ({ width: 200, height: 20 }),
+    querySelectorAll: () => Array.from({ length: childCount }, () => ({})),
+  });
+  const paragraph = make('p');
+  const giant = make('[data-source-message-id]', 5);
+  const regions = findRegions([paragraph, giant]);
+  assert.deepEqual(regions.map(region => region.node), [paragraph]);
+});
+
 test('regionToBlock reproduces tables, diagrams, code and text', () => {
   const cell = text => ({ textContent: text });
   const row = cells => ({ querySelectorAll: () => cells });

@@ -31,7 +31,15 @@ by session or by knowledge-web topic/node, and supports full-text search.
   Detection scans every transcript root (including question docks) and also
   hit-tests visible transcript content, so it works for both fresh and older
   settled sessions. Collapsed or off-screen content must be expanded or scrolled
-  into view before it can be outlined.
+  into view before it can be outlined. Whole-session wrapper elements are skipped
+  so a session is no longer detected as one unpickable block.
+
+  **Debug log.** Every action and error is appended to
+  `session-notes-debug.log` in the plugin's data directory (next to `notes.json`,
+  usually under `~/Library/Application Support/LearnHarness/data/plugins/...`).
+  The overlay's `debug` line shows the filename. It records detection counts and
+  samples, region picks, drags, add/save results and errors as JSON lines — send
+  this file when reporting a problem.
 - **Organisation.** Switch between **By session**, **By topic**, and **By
   knowledge node**. Topics can be typed (with suggestions from the knowledge
   web's clusters); nodes are chosen with the native knowledge picker and map to
