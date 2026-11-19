@@ -273,6 +273,14 @@
   font-size: 0.75rem;
 }
 
+.sn-region-debug {
+  position: relative;
+  z-index: 3;
+  color: var(--muted-text, rgba(127, 127, 127, 1));
+  font-size: 0.65rem;
+  opacity: 0.75;
+}
+
 .sn-region-canvas {
   position: absolute;
   inset: 0;
@@ -280,6 +288,7 @@
   z-index: 2;
   cursor: crosshair;
   touch-action: none;
+  pointer-events: auto;
 }
 
 .sn-region-box {
@@ -287,6 +296,7 @@
   display: block;
   min-width: 8px;
   min-height: 8px;
+  pointer-events: auto;
   padding: 0;
   border: 2px solid rgba(90, 160, 255, 0.85);
   border-radius: 0.3rem;
@@ -351,7 +361,8 @@
   cursor: pointer;
 }
 
-.sn-pick-filter.is-active { background: var(--muted-bg, rgba(127, 127, 127, 0.2)); font-weight: 600; }
+.sn-pick-filter.is-active,
+.sn-pick-action.is-active { background: var(--muted-bg, rgba(127, 127, 127, 0.2)); font-weight: 600; }
 .sn-pick-action:hover,
 .sn-pick-filter:hover { background: var(--muted-bg, rgba(127, 127, 127, 0.12)); }
 

@@ -17,13 +17,17 @@ by session or by knowledge-web topic/node, and supports full-text search.
   - **click** a region to select it, or **drag** across the transcript to select
     every region the rectangle touches; use **Select all**, **Clear** and
     **Refresh**, and scroll the wheel to move through the transcript;
+  - **Pick element** is a manual fallback: click it, then click any element in
+    the transcript to add it to the selection (press **Escape** to cancel). Use
+    this if automatic detection misses something.
   - **Add selected to notes** converts the selection into note blocks: text is
     transcribed from the rendered element, tables are rebuilt as Markdown
     tables, code keeps its language, and diagrams keep their original Mermaid
     source so the host's diagram renderer recreates them in the note.
   This avoids re-rendering the session, so it stays responsive on long sessions.
   It does use the host transcript's DOM structure, which may change in a future
-  LearnHarness update.
+  LearnHarness update. The status line shows the detected/selected counts and a
+  `debug` line (scope, nodes found, clicks received) to help diagnose any change.
 - **Organisation.** Switch between **By session**, **By topic**, and **By
   knowledge node**. Topics can be typed (with suggestions from the knowledge
   web's clusters); nodes are chosen with the native knowledge picker and map to

@@ -629,11 +629,16 @@ export function activate(ctx) {
         selectAll.type = 'button';
         const clear = el('button', 'sn-pick-action', 'Clear');
         clear.type = 'button';
+        const pick = el('button', 'sn-pick-action', 'Pick element');
+        pick.type = 'button';
+        pick.title = 'Click any element in the transcript to add it to the selection';
         const addSlot = el('span', 'sn-button-slot');
-        head.append(refresh, selectAll, clear, addSlot);
+        head.append(refresh, selectAll, clear, pick, addSlot);
         root.append(head);
         const status = el('div', 'sn-region-status', 'Detecting regions…');
         root.append(status);
+        const debug = el('div', 'sn-region-debug', '');
+        root.append(debug);
         const canvas = el('div', 'sn-region-canvas');
         const dragBox = el('div', 'sn-region-drag');
         dragBox.hidden = true;
@@ -641,7 +646,8 @@ export function activate(ctx) {
         root.append(canvas);
 
         let regions = [], boxes = new Map(), selected = new Set(), layoutQueued = false, dragMoved = false;
-        let start = null, startRegion = null, canvasBase = null, toggledOnDown = false;
+        let start = null, canvasBase = null;
+        let rawHits = 0, clickCount = 0, scopeLabel = '?', detectError = '';
 
         const setSelected = (region, on) => {
           if (on) selected.add(region);
@@ -649,7 +655,9 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          status.textContent = `v0.1.4 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          status.textContent = `v0.1.5 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          debug.textContent = `debug · scope=${scopeLabel} found=${rawHits} clicks=${clickCount}`
+            + (detectError ? ` · error: ${detectError}` : '');
           addHandle.update({ disabled: !selected.size });
         };
         const layout = () => {
@@ -676,32 +684,81 @@ export function activate(ctx) {
           layoutQueued = true;
           globalThis.requestAnimationFrame?.(layout);
         };
+        /** Find real transcript elements under the overlay by temporarily making
+         * the surface transparent to hit-testing. Works even if host selectors change. */
+        const hitTestRegions = () => {
+          const frame = canvas.closest('[data-plugin-session-surface-frame]');
+          const base = canvas.getBoundingClientRect();
+          const oldFrame = frame?.style.pointerEvents;
+          const oldCanvas = canvas.style.pointerEvents;
+          const found = new Set();
+          try {
+            if (frame) frame.style.pointerEvents = 'none';
+            canvas.style.pointerEvents = 'none';
+            for (let y = base.top + 4; y < base.bottom - 4; y += 28) {
+              for (let x = base.left + 4; x < base.right - 4; x += 56) {
+                let node = document.elementFromPoint?.(x, y);
+                while (node && !node.matches?.(REGION_SELECTOR)) node = node.parentElement;
+                if (node && !node.closest?.('[data-plugin-session-surface]')) found.add(node);
+              }
+            }
+          } catch (error) {
+            detectError = String(error?.message || error);
+          } finally {
+            if (frame) frame.style.pointerEvents = oldFrame;
+            canvas.style.pointerEvents = oldCanvas;
+          }
+          return [...found];
+        };
+
+        const addBox = region => {
+          if (boxes.has(region)) return;
+          const box = el('button', `sn-region-box sn-region-${region.type}`);
+          box.type = 'button';
+          box.title = `${region.label} — click to select, or drag across regions`;
+          box.setAttribute('aria-label', box.title);
+          box.append(el('span', 'sn-region-tag', region.label));
+          // Native click is the most reliable selection path.
+          box.addEventListener('click', event => {
+            event.stopPropagation();
+            clickCount += 1;
+            setSelected(region, !selected.has(region));
+            updateStatus();
+          }, { signal });
+          canvas.append(box);
+          boxes.set(region, box);
+        };
+
         const detect = () => {
           if (signal.aborted) return;
           selected = new Set();
+          clickCount = 0;
+          detectError = '';
           for (const box of boxes.values()) box.remove();
           boxes = new Map();
           const transcript = document.querySelector('[data-session-find-root]')
             || document.querySelector('[role="log"]') || document.body;
-          regions = findRegions(transcript);
-          if (!regions.length && transcript !== document.body) regions = findRegions(document.body);
-          for (const region of regions) {
-            const box = el('button', `sn-region-box sn-region-${region.type}`);
-            box.type = 'button';
-            box.title = `${region.label} — click to select, or drag across regions`;
-            box.setAttribute('aria-label', box.title);
-            box.append(el('span', 'sn-region-tag', region.label));
-            canvas.append(box);
-            boxes.set(region, box);
+          scopeLabel = transcript === document.body ? 'body'
+            : transcript.hasAttribute?.('data-session-find-root') !== false ? 'find-root' : 'log';
+          let nodes = [];
+          try {
+            nodes = [...(transcript.querySelectorAll?.(REGION_SELECTOR) ?? [])];
+            if (!nodes.length && transcript !== document.body) {
+              nodes = [...document.body.querySelectorAll(REGION_SELECTOR)];
+              scopeLabel += '+body';
+            }
+            for (const node of hitTestRegions()) nodes.push(node);
+          } catch (error) {
+            detectError = String(error?.message || error);
           }
+          rawHits = nodes.length;
+          regions = findRegions({ querySelectorAll: () => [...new Set(nodes)] });
+          for (const region of regions) addBox(region);
           layout();
-          // The frame can still be sizing when content mounts; relayout next frame
-          // and once more shortly after so streaming content is picked up.
+          // The frame can still be sizing when content mounts. Always re-layout,
+          // even when regions were found, because boxes may be positioned wrongly.
           globalThis.requestAnimationFrame?.(queueLayout);
-          if (!detect.delayed) {
-            detect.delayed = true;
-            globalThis.setTimeout?.(() => { if (!signal.aborted && !regions.length) detect(); }, 300);
-          }
+          globalThis.setTimeout?.(() => { if (!signal.aborted) { layout(); if (!regions.length) detect(); } }, 350);
         };
 
         const addHandle = widget(ctx.ui.mountButton(addSlot, {
@@ -725,22 +782,16 @@ export function activate(ctx) {
           const base = canvasBase || canvas.getBoundingClientRect();
           return { x: event.clientX - base.left, y: event.clientY - base.top };
         };
+        // Only start a drag from empty canvas. Region boxes handle their own
+        // native click, so pointer handling never swallows a selection.
         canvas.addEventListener('pointerdown', event => {
-          if (signal.aborted) return;
+          if (signal.aborted || event.target.closest?.('.sn-region-box')) return;
           event.preventDefault();
           canvasBase = canvas.getBoundingClientRect();
           start = point(event);
-          const targetBox = event.target.closest?.('.sn-region-box');
-          startRegion = [...boxes].find(([, box]) => box === targetBox)?.[0] ?? null;
           dragMoved = false;
-          toggledOnDown = false;
-          if (startRegion) {
-            setSelected(startRegion, !selected.has(startRegion));
-            toggledOnDown = true;
-          }
-          canvas.setPointerCapture?.(event.pointerId);
         }, { signal });
-        canvas.addEventListener('pointermove', event => {
+        document.addEventListener('pointermove', event => {
           if (!start || signal.aborted) return;
           const current = point(event);
           if (Math.abs(current.x - start.x) + Math.abs(current.y - start.y) > 5) dragMoved = true;
@@ -764,17 +815,15 @@ export function activate(ctx) {
         }, { signal });
         const finishDrag = () => {
           if (!start) return;
-          if (!dragMoved && startRegion && !toggledOnDown) setSelected(startRegion, !selected.has(startRegion));
           for (const box of boxes.values()) box.classList.remove('is-drag');
           dragBox.hidden = true;
           dragBox.style.width = '0px';
           dragBox.style.height = '0px';
           start = null;
-          startRegion = null;
           updateStatus();
         };
-        canvas.addEventListener('pointerup', finishDrag, { signal });
-        canvas.addEventListener('pointercancel', finishDrag, { signal });
+        document.addEventListener('pointerup', finishDrag, { signal });
+        document.addEventListener('pointercancel', finishDrag, { signal });
 
         const scroller = document.querySelector('[role="log"] > div[style*="scrollbar-gutter"]')
           || document.querySelector('[role="log"] > div');
@@ -796,6 +845,51 @@ export function activate(ctx) {
           for (const region of [...selected]) setSelected(region, false);
           updateStatus();
         }, { signal });
+
+        // Manual fallback: make the surface transparent to clicks so the next
+        // click lands on the real transcript element, then register it as a region.
+        let pickMode = false;
+        const setPickMode = on => {
+          const frame = canvas.closest('[data-plugin-session-surface-frame]');
+          if (frame) frame.style.pointerEvents = on ? 'none' : '';
+          canvas.style.pointerEvents = on ? 'none' : '';
+          pickMode = on;
+          pick.classList.toggle('is-active', on);
+          pick.textContent = on ? 'Click transcript…' : 'Pick element';
+        };
+        document.addEventListener('click', event => {
+          if (!pickMode || signal.aborted) return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.target.closest?.('[data-plugin-session-surface]')) {
+            setPickMode(false);
+            return;
+          }
+          let node = event.target;
+          while (node && !node.matches?.(REGION_SELECTOR)) node = node.parentElement;
+          if (node && !node.closest?.('[data-plugin-session-surface]')) {
+            const region = findRegions({ querySelectorAll: () => [node] })[0];
+            if (region) {
+              if (!boxes.has(region)) { regions.push(region); addBox(region); }
+              setSelected(region, true);
+              clickCount += 1;
+              layout();
+              updateStatus();
+            }
+          }
+          setPickMode(false);
+        }, { capture: true, signal });
+        document.addEventListener('keydown', event => {
+          if (event.key === 'Escape' && pickMode) {
+            event.stopPropagation();
+            setPickMode(false);
+          }
+        }, { capture: true, signal });
+        pick.addEventListener('click', event => {
+          event.stopPropagation();
+          setPickMode(!pickMode);
+        }, { signal });
+
         detect();
       },
     };
