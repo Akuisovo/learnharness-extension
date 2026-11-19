@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   splitMarkdown, collectSources, sourceStrings, blocksFromView,
   tableToMarkdown, fenceSources, captureFromElement, readSelection, topLevelCaptures, previewBlock,
+  diagramSources, findRegions, regionToBlock, rectsOverlap,
 } from '../src/main.js';
 
 test('splitMarkdown finds pipe tables with and without outer pipes', () => {
@@ -98,6 +99,74 @@ test('previewBlock makes a short plain-text label for the picker', () => {
   assert.equal(previewBlock({ type: 'diagram', markdown: '```mermaid\ngraph TD; A-->B\n```' }), 'graph TD; A-->B');
   assert.equal(previewBlock({ type: 'text', markdown: '**Bold** and `code`' }), 'Bold and code');
   assert.equal(previewBlock({ type: 'code', markdown: '' }), 'code');
+});
+
+test('diagramSources reads Mermaid from plan tool inputs as well as Markdown fences', () => {
+  const view = {
+    transcript: [{ parts: [{ type: 'tool-plan_init', input: { mermaid: 'graph TD; A-->B' } }] }],
+    messages: [{ role: 'assistant', content: [
+      { type: 'text', text: '```mermaid\ngraph LR; C-->D\n```' },
+      { type: 'toolCall', name: 'plan_init', arguments: { mermaid: 'graph TB; E-->F' } },
+    ] }],
+  };
+  const sources = diagramSources(view);
+  assert.equal(sources.length, 3);
+  assert.ok(sources.every(source => source.startsWith('```mermaid')));
+  assert.ok(sources.some(source => source.includes('A-->B')));
+  assert.ok(sources.some(source => source.includes('C-->D')));
+  assert.ok(sources.some(source => source.includes('E-->F')));
+});
+
+test('findRegions keeps structured blocks ahead of their transcript wrappers', () => {
+  const selectors = {
+    table: ['table[data-streamdown="table"]', 'table'],
+    mermaid: ['[data-testid="md-mermaid"]'],
+    p: ['p'],
+    wrapper: ['[data-source-message-id]'],
+  };
+  const make = (kind, children = []) => ({
+    children,
+    matches: value => value.split(', ').some(part => selectors[kind].includes(part)),
+    contains: other => children.includes(other) || children.some(child => child.contains?.(other)),
+    closest: () => null,
+  });
+  const table = make('table');
+  const para = make('p');
+  const diagram = make('mermaid');
+  const wrapper = make('wrapper', [table, para, diagram]);
+  const regions = findRegions({ querySelectorAll: () => [wrapper, table, para, diagram] });
+  assert.deepEqual(regions.map(region => region.type), ['table', 'text', 'diagram']);
+  assert.deepEqual(regions.map(region => region.diagramIndex), [-1, -1, 0]);
+});
+
+test('regionToBlock reproduces tables, diagrams, code and text', () => {
+  const cell = text => ({ textContent: text });
+  const row = cells => ({ querySelectorAll: () => cells });
+  const header = row([cell('A'), cell('B')]);
+  const data = row([cell('1'), cell('2')]);
+  const table = {
+    querySelectorAll: selector => selector === 'tr' ? [header, data] : [],
+    querySelector: () => header,
+    outerHTML: '<table></table>',
+  };
+  assert.match(regionToBlock({ type: 'table', node: table }).markdown, /\| A \| B \|/);
+
+  const sources = ['```mermaid\ngraph LR; A-->B\n```'];
+  const diagram = { type: 'diagram', node: { outerHTML: '<div/>', textContent: '' }, diagramIndex: 0 };
+  assert.equal(regionToBlock(diagram, sources).markdown, sources[0]);
+  assert.match(regionToBlock({ ...diagram, diagramIndex: 1 }, sources).markdown, /<div\/>/);
+
+  const code = { type: 'code', node: {
+    getAttribute: () => 'js', querySelector: () => ({ textContent: 'const x = 1;' }), textContent: '',
+  } };
+  assert.equal(regionToBlock(code).markdown, '```js\nconst x = 1;\n```');
+  assert.equal(regionToBlock({ type: 'text', node: { innerText: '  hello  ' } }).markdown, 'hello');
+});
+
+test('rectsOverlap detects drag selection intersections', () => {
+  const box = { left: 10, top: 10, right: 30, bottom: 30 };
+  assert.equal(rectsOverlap(box, { left: 20, top: 20, right: 40, bottom: 40 }), true);
+  assert.equal(rectsOverlap(box, { left: 31, top: 10, right: 40, bottom: 40 }), false);
 });
 
 test('readSelection reads from shadow DOM scopes as well as the document', () => {

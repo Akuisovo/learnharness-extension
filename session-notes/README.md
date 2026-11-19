@@ -10,17 +10,20 @@ by session or by knowledge-web topic/node, and supports full-text search.
 - **Sidebar place.** The **Notes** action is placed in the sidebar. Click it to
   open the Notes view: a grouped list on the left and an editor on the right.
 - **Add from a session.** In a teaching or practice session, use the top-bar
-  **Add to notes** action. It opens a lightweight **block picker**:
-  - every detected text, table, diagram and code block appears as a plain row
-    with a checkbox, a type badge and a short preview — no Markdown or diagrams
-    are rendered, so even long sessions open quickly;
-  - filter by type or search text, tick the blocks you want (**Select visible**
-    selects everything currently shown), then use **Add selected to note** to
-    append them all to an existing note or create one new note with them.
-  - **Full transcript view** is available from the picker header when you prefer
-    the older flow: highlight text and **right-click → Add to note**, or click a
-    note icon beside any rendered table/diagram/code block. That view renders the
-    whole session, so it is slower on long sessions.
+  **Add to notes** action. It opens a screenshot-style **region picker** over
+  the live transcript:
+  - tables, Mermaid diagrams, code blocks, images and prose paragraphs are
+    detected automatically and outlined as labelled regions;
+  - **click** a region to select it, or **drag** across the transcript to select
+    every region the rectangle touches; use **Select all**, **Clear** and
+    **Refresh**, and scroll the wheel to move through the transcript;
+  - **Add selected to notes** converts the selection into note blocks: text is
+    transcribed from the rendered element, tables are rebuilt as Markdown
+    tables, code keeps its language, and diagrams keep their original Mermaid
+    source so the host's diagram renderer recreates them in the note.
+  This avoids re-rendering the session, so it stays responsive on long sessions.
+  It does use the host transcript's DOM structure, which may change in a future
+  LearnHarness update.
 - **Organisation.** Switch between **By session**, **By topic**, and **By
   knowledge node**. Topics can be typed (with suggestions from the knowledge
   web's clusters); nodes are chosen with the native knowledge picker and map to
@@ -46,15 +49,18 @@ npm --prefix session-notes run install:local -- "/path/to/plugins"
 
 ## API boundary / limitations
 
-LearnHarness plugin API v1 does **not** expose a hook to add right-click items
-or icons to the *native* transcript DOM, and does not let a community plugin
-decorate host-rendered tables or Mermaid diagrams in place. The official
-Flashcards plugin has the same limitation. Session Notes therefore uses the
-**only supported route**: a plugin-owned overlay opened from a top-bar action,
-rendered with the host's `mountMarkdown` so tables and diagrams still look
-native, with plugin-owned note icons and context menu inside that overlay.
+LearnHarness plugin API v1 does **not** expose a screenshot service, an OCR
+service, a region-selection hook, or a way to invoke the host's diagram tool.
+It also has no public hook for right-click items or icons in the *native*
+transcript. Session Notes therefore draws its own region picker inside a
+plugin-owned page overlay opened from a top-bar action.
 
-Session content is read from the detached session view supplied to the action
+The picker detects regions by reading the transcript's rendered DOM (host data
+attributes such as `data-session-find-root`, `data-streamdown="table"`,
+`data-testid="md-mermaid"` and `data-source-message-id`). Those selectors are
+private host implementation details, not public API, so they may need updating
+after a LearnHarness upgrade. Content is transcribed from the rendered elements
+and matched to original Mermaid source from the detached session view
 (`context.view.transcript` / `messages`). The backend may read native sessions
 and the graph read-only via `ctx.learning`, but it never writes native data.
 Nothing is sent to a model or a network service.

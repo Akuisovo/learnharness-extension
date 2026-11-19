@@ -238,6 +238,84 @@
 .sn-capture-kind { font-size: 0.7rem; color: var(--muted-text, rgba(127, 127, 127, 1)); text-transform: uppercase; letter-spacing: 0.04em; }
 .sn-capture-icon svg { width: 1rem; height: 1rem; }
 
+/* Screenshot-style region picker. */
+.sn-region-picker {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.sn-region-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  position: relative;
+  z-index: 3;
+}
+
+.sn-region-status {
+  position: relative;
+  z-index: 3;
+  color: var(--muted-text, rgba(127, 127, 127, 1));
+  font-size: 0.75rem;
+}
+
+.sn-region-canvas {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  z-index: 2;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.sn-region-box {
+  position: absolute;
+  display: block;
+  padding: 0;
+  border: 2px solid rgba(90, 160, 255, 0.85);
+  border-radius: 0.3rem;
+  background: rgba(90, 160, 255, 0.1);
+  color: inherit;
+  cursor: pointer;
+}
+
+.sn-region-box:hover { background: rgba(90, 160, 255, 0.2); }
+.sn-region-box.is-selected {
+  border-color: rgba(80, 220, 140, 0.95);
+  background: rgba(80, 220, 140, 0.18);
+}
+.sn-region-box.is-drag { background: rgba(90, 160, 255, 0.28); }
+.sn-region-table { border-color: rgba(105, 168, 230, 0.9); }
+.sn-region-diagram { border-color: rgba(180, 130, 240, 0.9); }
+.sn-region-code { border-color: rgba(120, 200, 140, 0.9); }
+
+.sn-region-tag {
+  position: absolute;
+  top: -1.15rem;
+  left: -2px;
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.2rem 0.2rem 0 0;
+  background: rgba(90, 160, 255, 0.9);
+  color: #fff;
+  font-size: 0.62rem;
+  line-height: 1.2;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.sn-region-drag {
+  position: absolute;
+  border: 1px dashed rgba(80, 220, 140, 0.95);
+  background: rgba(80, 220, 140, 0.12);
+  pointer-events: none;
+}
+
 /* Lightweight block picker (default Add to notes flow). */
 .sn-pick-toolbar,
 .sn-pick-actions {

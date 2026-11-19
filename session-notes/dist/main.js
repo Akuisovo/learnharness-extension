@@ -27,7 +27,7 @@ function lifetime(...parents) {
 }
 
 const DIAGRAM_LANGS = new Set(['mermaid', 'graph', 'flowchart', 'sequence', 'class', 'gantt', 'pie', 'state', 'er', 'timeline', 'mindmap']);
-const TEXT_KEYS = new Set(['text', 'markdown', 'content', 'output', 'data', 'result', 'details', 'source', 'chart', 'code', 'value', 'answer', 'question', 'statement', 'partial']);
+const TEXT_KEYS = new Set(['text', 'markdown', 'content', 'output', 'data', 'result', 'details', 'source', 'chart', 'code', 'value', 'answer', 'question', 'statement', 'partial', 'message', 'mermaid', 'errorText', 'input', 'arguments']);
 const SKIP_KEYS = new Set(['id', 'type', 'role', 'state', 'toolCallId', 'sourceMessageId', 'sourceContentIndex', 'mimeType', 'snapshotId', 'path', 'url', 'name']);
 
 /** Flatten prose into text blocks and consecutive pipe/grid/ASCII table rows into table blocks. */
@@ -101,7 +101,8 @@ export function collectSources(part, out = [], depth = 0) {
       if (typeof value === 'string') { if (value.trim()) out.push(value); continue; }
       if (value && typeof value === 'object') { collectSources(value, out, depth + 1); continue; }
     }
-    if (key === 'parts' || key === 'messages' || key === 'message' || key === 'result' || key === 'output' || key === 'data') {
+    if (key === 'parts' || key === 'messages' || key === 'message' || key === 'result' || key === 'output'
+      || key === 'data' || key === 'arguments' || key === 'input' || key === 'details' || key === 'content') {
       collectSources(value, out, depth + 1);
     }
   }
@@ -120,10 +121,25 @@ export function sourceStrings(view) {
     const parts = Array.isArray(msg?.parts) ? msg.parts : [];
     for (const part of parts) add(part);
   }
-  if (!sources.length && Array.isArray(view?.messages)) {
-    for (const msg of view.messages) add(msg?.message ?? msg?.content ?? msg);
+  const messages = Array.isArray(view?.messages) ? view.messages : [];
+  for (const msg of messages) add(msg);
+  return sources.slice(0, 60);
+}
+
+/** Mermaid sources in transcript order, used to reproduce rendered diagrams. */
+export function diagramSources(view) {
+  const found = [];
+  const add = value => {
+    if (!found.includes(value)) found.push(value);
+  };
+  for (const source of sourceStrings(view)) {
+    for (const pick of fenceSources(source, true)) add(pick.markdown);
+    const trimmed = source.trim();
+    if (/^(?:graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|timeline|mindmap)\b/i.test(trimmed)) {
+      add(`\`\`\`mermaid\n${trimmed}\n\`\`\``);
+    }
   }
-  return sources.slice(0, 40);
+  return found;
 }
 
 export function blocksFromView(view) {
@@ -227,6 +243,83 @@ export function previewBlock(block) {
     .replace(/\s+/g, ' ')
     .trim();
   return value.slice(0, 220) || (block?.caption || block?.type || 'Empty block');
+}
+
+/** Native transcript elements that can be turned into note blocks. */
+export const REGION_SELECTOR = [
+  'table[data-streamdown="table"]', 'table',
+  '[data-testid="md-mermaid"]', '[data-streamdown="mermaid"]',
+  '[data-streamdown="code-block"]',
+  '[data-streamdown="image-wrapper"]', 'img[data-streamdown="image"]',
+  '[data-source-message-id]', '[data-testid="user-message"]',
+  'p', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  '[data-testid="md-math"]', '[data-streamdown="blockquote"]',
+].join(', ');
+
+const regionMatches = {
+  table: 'table',
+  diagram: '[data-testid="md-mermaid"], [data-streamdown="mermaid"], [data-streamdown="image-wrapper"], img[data-streamdown="image"]',
+  code: '[data-streamdown="code-block"]',
+};
+
+export function regionType(node) {
+  for (const [type, selector] of Object.entries(regionMatches)) {
+    if (node.matches?.(selector)) return type;
+  }
+  return 'text';
+}
+
+/** Higher priority wins when boxes overlap, so a table is not hidden by its paragraph wrapper. */
+function regionPriority(node) {
+  if (node.matches?.('table')) return 3;
+  if (node.matches?.(regionMatches.diagram)) return 3;
+  if (node.matches?.(regionMatches.code)) return 3;
+  if (node.matches?.('p, li, h1, h2, h3, h4, h5, h6, [data-testid="md-math"], [data-streamdown="blockquote"]')) return 2;
+  return 1;
+}
+
+/** Detect selectable element regions inside the native transcript DOM. */
+export function findRegions(scope) {
+  const nodes = [...(scope?.querySelectorAll?.(REGION_SELECTOR) ?? [])]
+    .filter(node => !node.closest?.('[data-plugin-session-surface], [data-session-surface-mounts]'));
+  const info = nodes.map(node => ({ node, type: regionType(node), priority: regionPriority(node) }));
+  const kept = info.filter(({ node, priority }) => !info.some(other =>
+    other.node !== node && (
+      (other.priority > priority && other.node.contains?.(node))
+      || (other.priority === priority && other.node.contains?.(node))
+      || (priority < 3 && other.priority === 3 && node.contains?.(other.node))
+    )));
+  let diagramIndex = -1;
+  return kept.map(({ node, type }) => ({
+    node, type,
+    label: type === 'table' ? 'Table' : type === 'diagram' ? 'Diagram' : type === 'code' ? 'Code' : 'Text',
+    diagramIndex: type === 'diagram' ? ++diagramIndex : -1,
+  })).slice(0, 300);
+}
+
+/** Turn a selected DOM region into a note block. Diagrams keep their Mermaid source. */
+export function regionToBlock(region, mermaidSources = []) {
+  const node = region.node;
+  const type = region.type || regionType(node);
+  if (type === 'table') {
+    return { type: 'table', markdown: tableToMarkdown(node), caption: 'Table' };
+  }
+  if (type === 'diagram') {
+    const index = region.diagramIndex ?? 0;
+    const markdown = mermaidSources[index] || `\`\`\`html\n${node.outerHTML || node.textContent || ''}\n\`\`\``;
+    return { type: 'diagram', markdown, caption: 'Diagram' };
+  }
+  if (type === 'code') {
+    const language = node.getAttribute?.('data-language') || '';
+    const code = node.querySelector?.('code')?.textContent || node.textContent || '';
+    return { type: 'code', markdown: `\`\`\`${language}\n${String(code).trim()}\n\`\`\``, caption: 'Code' };
+  }
+  const markdown = String(node.innerText || node.textContent || '').trim();
+  return { type: 'text', markdown, caption: 'Text' };
+}
+
+export function rectsOverlap(a, b) {
+  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 }
 
 const localMatch = (note, query) => {
@@ -506,133 +599,188 @@ export function activate(ctx) {
     void ensureCatalog();
   }
 
-  /** Lightweight default flow: pick detected blocks and add them in one batch.
-   * Only plain text rows are rendered — no host Markdown, observers or layout reads. */
+  /** Screenshot-style region picker: auto-detect transcript elements, then click
+   * a highlighted region or drag across several to add them to a note. */
   function openSessionOverlay(context) {
     if (context?.surface !== 'session' || ctx.signal.aborted) return;
     const session = {
       sessionId: context.sessionId || '', sessionTitle: context.view?.title || context.sessionId || '',
       kind: context.view?.kind || 'teaching',
     };
-    const blocks = blocksFromView(context.view);
+    const mermaidSources = diagramSources(context.view);
     const scope = lifetime(ctx.signal);
     const props = {
       title: 'Add to notes',
-      background: 'opaque',
+      background: 'dimmed',
       content: (container, hostSignal) => {
         const signal = lifetime(scope.signal, hostSignal).signal;
-        const root = el('div', 'sn-overlay sn-picker');
+        const root = el('div', 'sn-region-picker');
         container.append(root);
-        const head = el('div', 'sn-overlay-head');
+        const head = el('div', 'sn-region-head');
         head.append(el('h2', 'sn-title', `Add to notes — ${session.sessionTitle || 'Session'}`));
-        head.append(el('span', 'sn-hint', blocks.length
-          ? `Tick the blocks you want, then add them together (${blocks.length} found).`
-          : 'No capturable content was found in this session.'));
+        head.append(el('span', 'sn-hint', 'Click a region or drag across several. Text is transcribed, tables are rebuilt, diagrams keep their Mermaid source.'));
         head.append(el('span', 'sn-spacer'));
-        button(head, 'Full transcript view', () => openFullSessionOverlay(context), signal, { variant: 'ghost' });
-        root.append(head);
-
-        const toolbar = el('div', 'sn-pick-toolbar');
-        const search = el('input', 'sn-search');
-        search.type = 'search';
-        search.placeholder = 'Filter blocks…';
-        search.setAttribute('aria-label', 'Filter blocks');
-        toolbar.append(search);
-        const filterRow = el('div', 'sn-pick-filters');
-        toolbar.append(filterRow);
-        root.append(toolbar);
-
-        const actions = el('div', 'sn-pick-actions');
-        const selectAll = el('button', 'sn-pick-action', 'Select visible');
+        const refresh = el('button', 'sn-pick-action', 'Refresh');
+        refresh.type = 'button';
+        const selectAll = el('button', 'sn-pick-action', 'Select all');
         selectAll.type = 'button';
-        const clearAll = el('button', 'sn-pick-action', 'Clear');
-        clearAll.type = 'button';
-        const status = el('span', 'sn-hint', '0 selected');
+        const clear = el('button', 'sn-pick-action', 'Clear');
+        clear.type = 'button';
         const addSlot = el('span', 'sn-button-slot');
-        actions.append(selectAll, clearAll, status, el('span', 'sn-spacer'), addSlot);
-        root.append(actions);
+        head.append(refresh, selectAll, clear, addSlot);
+        root.append(head);
+        const status = el('div', 'sn-region-status', 'Detecting regions…');
+        root.append(status);
+        const canvas = el('div', 'sn-region-canvas');
+        const dragBox = el('div', 'sn-region-drag');
+        dragBox.hidden = true;
+        canvas.append(dragBox);
+        root.append(canvas);
 
-        const list = el('div', 'sn-pick-list');
-        root.append(list);
-        const empty = el('p', 'sn-empty', 'No blocks match this filter.');
-        list.append(empty);
-        const picked = new Set();
-        const rows = [];
-        for (const [index, block] of blocks.entries()) {
-          const row = el('label', 'sn-pick-row');
-          const checkbox = el('input', 'sn-pick-check');
-          checkbox.type = 'checkbox';
-          checkbox.addEventListener('change', () => {
-            if (checkbox.checked) picked.add(index);
-            else picked.delete(index);
-            updateStatus();
-          }, { signal });
-          row.append(checkbox);
-          row.append(el('span', `sn-pick-badge sn-pick-${block.type || 'text'}`, block.type || 'text'));
-          row.append(el('span', 'sn-pick-preview', previewBlock(block)));
-          list.append(row);
-          rows.push({ row, index, block, checkbox });
-        }
-        empty.hidden = blocks.length > 0;
+        let regions = [], boxes = new Map(), selected = new Set(), layoutQueued = false, dragMoved = false;
+        let start = null, startRegion = null, canvasBase = null;
 
-        let activeFilter = 'all';
-        const filterButtons = new Map();
-        for (const [value, label] of [['all', 'All'], ['text', 'Text'], ['table', 'Tables'], ['diagram', 'Diagrams'], ['code', 'Code']]) {
-          const filterButton = el('button', 'sn-pick-filter', label);
-          filterButton.type = 'button';
-          filterButton.addEventListener('click', () => {
-            activeFilter = value;
-            for (const [key, node] of filterButtons) node.classList.toggle('is-active', key === value);
-            applyFilter();
-          }, { signal });
-          filterButtons.set(value, filterButton);
-          filterRow.append(filterButton);
-        }
-        filterButtons.get('all').classList.add('is-active');
-
-        const selectedBlocks = () => blocks.filter((_, index) => picked.has(index));
+        const setSelected = (region, on) => {
+          if (on) selected.add(region);
+          else selected.delete(region);
+          boxes.get(region)?.classList.toggle('is-selected', on);
+        };
         const updateStatus = () => {
-          status.textContent = `${picked.size} selected`;
-          addHandle.update({ disabled: !picked.size });
+          status.textContent = `${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          addHandle.update({ disabled: !selected.size });
         };
-        const applyFilter = () => {
-          const query = search.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-          let shown = 0;
-          for (const { row, block } of rows) {
-            const typeOk = activeFilter === 'all' || block.type === activeFilter;
-            const haystack = `${block.caption || ''} ${block.markdown || ''}`.toLocaleLowerCase();
-            const textOk = !query.length || query.every(term => haystack.includes(term));
-            row.hidden = !typeOk || !textOk;
-            if (!row.hidden) shown += 1;
+        const layout = () => {
+          layoutQueued = false;
+          if (signal.aborted) return;
+          canvasBase = canvas.getBoundingClientRect();
+          for (const [region, box] of boxes) {
+            if (!region.node.isConnected) { box.remove(); boxes.delete(region); selected.delete(region); continue; }
+            const rect = region.node.getBoundingClientRect();
+            region.rect = {
+              left: rect.left - canvasBase.left, top: rect.top - canvasBase.top,
+              right: rect.right - canvasBase.left, bottom: rect.bottom - canvasBase.top,
+            };
+            box.style.left = `${region.rect.left}px`;
+            box.style.top = `${region.rect.top}px`;
+            box.style.width = `${Math.max(0, region.rect.right - region.rect.left)}px`;
+            box.style.height = `${Math.max(0, region.rect.bottom - region.rect.top)}px`;
+            box.hidden = !region.rect.right || !region.rect.bottom;
           }
-          empty.hidden = shown > 0;
-        };
-        const clearSelection = () => {
-          picked.clear();
-          for (const { checkbox } of rows) checkbox.checked = false;
           updateStatus();
         };
+        const queueLayout = () => {
+          if (layoutQueued || signal.aborted) return;
+          layoutQueued = true;
+          globalThis.requestAnimationFrame?.(layout);
+        };
+        const detect = () => {
+          if (signal.aborted) return;
+          selected = new Set();
+          for (const box of boxes.values()) box.remove();
+          boxes = new Map();
+          const transcript = document.querySelector('[data-session-find-root]')
+            || document.querySelector('[role="log"]') || document.body;
+          regions = findRegions(transcript);
+          for (const region of regions) {
+            const box = el('button', `sn-region-box sn-region-${region.type}`);
+            box.type = 'button';
+            box.title = `${region.label} — click to select, or drag across regions`;
+            box.setAttribute('aria-label', box.title);
+            box.append(el('span', 'sn-region-tag', region.label));
+            canvas.append(box);
+            boxes.set(region, box);
+          }
+          layout();
+        };
+
         const addHandle = widget(ctx.ui.mountButton(addSlot, {
-          label: 'Add selected to note', size: 'sm', variant: 'outline', disabled: true,
+          label: 'Add selected to notes', size: 'sm', variant: 'outline', disabled: true,
           onClick: async () => {
-            const chosen = selectedBlocks();
+            const chosen = [...selected]
+              .map(region => regionToBlock(region, mermaidSources))
+              .filter(block => block.markdown && block.markdown.trim());
             if (!chosen.length || signal.aborted) return;
-            await addBlocksFlow(addSlot, chosen, signal, session, { onDone: clearSelection });
-            addHandle.update({ disabled: !picked.size });
+            await addBlocksFlow(addSlot, chosen, signal, session, {
+              onDone: () => {
+                for (const region of selected) boxes.get(region)?.classList.remove('is-selected');
+                selected = new Set();
+                updateStatus();
+              },
+            });
           },
         }, { signal }), signal);
 
-        search.addEventListener('input', applyFilter, { signal });
-        selectAll.addEventListener('click', () => {
-          for (const { row, index, checkbox } of rows) {
-            if (row.hidden) continue;
-            picked.add(index);
-            checkbox.checked = true;
+        const point = event => {
+          const base = canvasBase || canvas.getBoundingClientRect();
+          return { x: event.clientX - base.left, y: event.clientY - base.top };
+        };
+        canvas.addEventListener('pointerdown', event => {
+          if (signal.aborted) return;
+          event.preventDefault();
+          canvasBase = canvas.getBoundingClientRect();
+          start = point(event);
+          const targetBox = event.target.closest?.('.sn-region-box');
+          startRegion = [...boxes].find(([, box]) => box === targetBox)?.[0] ?? null;
+          dragMoved = false;
+          canvas.setPointerCapture?.(event.pointerId);
+        }, { signal });
+        canvas.addEventListener('pointermove', event => {
+          if (!start || signal.aborted) return;
+          const current = point(event);
+          if (Math.abs(current.x - start.x) + Math.abs(current.y - start.y) > 5) dragMoved = true;
+          if (!dragMoved) return;
+          const rect = {
+            left: Math.min(start.x, current.x), right: Math.max(start.x, current.x),
+            top: Math.min(start.y, current.y), bottom: Math.max(start.y, current.y),
+          };
+          dragBox.hidden = false;
+          dragBox.style.left = `${rect.left}px`;
+          dragBox.style.top = `${rect.top}px`;
+          dragBox.style.width = `${rect.right - rect.left}px`;
+          dragBox.style.height = `${rect.bottom - rect.top}px`;
+          for (const [region, box] of boxes) {
+            if (region.rect && rectsOverlap(region.rect, rect)) {
+              setSelected(region, true);
+              box.classList.add('is-drag');
+            } else box.classList.remove('is-drag');
           }
           updateStatus();
         }, { signal });
-        clearAll.addEventListener('click', clearSelection, { signal });
-        updateStatus();
+        const finishDrag = () => {
+          if (!start) return;
+          if (!dragMoved && startRegion) setSelected(startRegion, !selected.has(startRegion));
+          for (const box of boxes.values()) box.classList.remove('is-drag');
+          dragBox.hidden = true;
+          dragBox.style.width = '0px';
+          dragBox.style.height = '0px';
+          start = null;
+          startRegion = null;
+          updateStatus();
+        };
+        canvas.addEventListener('pointerup', finishDrag, { signal });
+        canvas.addEventListener('pointercancel', finishDrag, { signal });
+
+        const scroller = document.querySelector('[role="log"] > div[style*="scrollbar-gutter"]')
+          || document.querySelector('[role="log"] > div');
+        canvas.addEventListener('wheel', event => {
+          if (!scroller) return;
+          event.preventDefault();
+          scroller.scrollTop += event.deltaY;
+          queueLayout();
+        }, { signal, passive: false });
+        globalThis.addEventListener?.('resize', queueLayout, { signal });
+        document.addEventListener('scroll', queueLayout, { capture: true, signal });
+
+        refresh.addEventListener('click', detect, { signal });
+        selectAll.addEventListener('click', () => {
+          for (const region of regions) setSelected(region, true);
+          updateStatus();
+        }, { signal });
+        clear.addEventListener('click', () => {
+          for (const region of [...selected]) setSelected(region, false);
+          updateStatus();
+        }, { signal });
+        detect();
       },
     };
     const options = { signal: ctx.signal };
