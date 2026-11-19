@@ -614,6 +614,9 @@ export function activate(ctx) {
       background: 'dimmed',
       content: (container, hostSignal) => {
         const signal = lifetime(scope.signal, hostSignal).signal;
+        // The host's surface frame is 80% opaque and blurred. Opt this overlay out
+        // so the live transcript underneath stays visible for region selection.
+        container.closest?.('[data-plugin-session-surface-frame]')?.setAttribute('data-sn-transparent', '1');
         const root = el('div', 'sn-region-picker');
         container.append(root);
         const head = el('div', 'sn-region-head');
@@ -638,7 +641,7 @@ export function activate(ctx) {
         root.append(canvas);
 
         let regions = [], boxes = new Map(), selected = new Set(), layoutQueued = false, dragMoved = false;
-        let start = null, startRegion = null, canvasBase = null;
+        let start = null, startRegion = null, canvasBase = null, toggledOnDown = false;
 
         const setSelected = (region, on) => {
           if (on) selected.add(region);
@@ -646,7 +649,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          status.textContent = `${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          status.textContent = `v0.1.4 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           addHandle.update({ disabled: !selected.size });
         };
         const layout = () => {
@@ -681,6 +684,7 @@ export function activate(ctx) {
           const transcript = document.querySelector('[data-session-find-root]')
             || document.querySelector('[role="log"]') || document.body;
           regions = findRegions(transcript);
+          if (!regions.length && transcript !== document.body) regions = findRegions(document.body);
           for (const region of regions) {
             const box = el('button', `sn-region-box sn-region-${region.type}`);
             box.type = 'button';
@@ -691,6 +695,13 @@ export function activate(ctx) {
             boxes.set(region, box);
           }
           layout();
+          // The frame can still be sizing when content mounts; relayout next frame
+          // and once more shortly after so streaming content is picked up.
+          globalThis.requestAnimationFrame?.(queueLayout);
+          if (!detect.delayed) {
+            detect.delayed = true;
+            globalThis.setTimeout?.(() => { if (!signal.aborted && !regions.length) detect(); }, 300);
+          }
         };
 
         const addHandle = widget(ctx.ui.mountButton(addSlot, {
@@ -722,6 +733,11 @@ export function activate(ctx) {
           const targetBox = event.target.closest?.('.sn-region-box');
           startRegion = [...boxes].find(([, box]) => box === targetBox)?.[0] ?? null;
           dragMoved = false;
+          toggledOnDown = false;
+          if (startRegion) {
+            setSelected(startRegion, !selected.has(startRegion));
+            toggledOnDown = true;
+          }
           canvas.setPointerCapture?.(event.pointerId);
         }, { signal });
         canvas.addEventListener('pointermove', event => {
@@ -748,7 +764,7 @@ export function activate(ctx) {
         }, { signal });
         const finishDrag = () => {
           if (!start) return;
-          if (!dragMoved && startRegion) setSelected(startRegion, !selected.has(startRegion));
+          if (!dragMoved && startRegion && !toggledOnDown) setSelected(startRegion, !selected.has(startRegion));
           for (const box of boxes.values()) box.classList.remove('is-drag');
           dragBox.hidden = true;
           dragBox.style.width = '0px';
