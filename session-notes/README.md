@@ -28,6 +28,10 @@ by session or by knowledge-web topic/node, and supports full-text search.
   It does use the host transcript's DOM structure, which may change in a future
   LearnHarness update. The status line shows the detected/selected counts and a
   `debug` line (scope, nodes found, clicks received) to help diagnose any change.
+  Detection scans every transcript root (including question docks) and also
+  hit-tests visible transcript content, so it works for both fresh and older
+  settled sessions. Collapsed or off-screen content must be expanded or scrolled
+  into view before it can be outlined.
 - **Organisation.** Switch between **By session**, **By topic**, and **By
   knowledge node**. Topics can be typed (with suggestions from the knowledge
   web's clusters); nodes are chosen with the native knowledge picker and map to

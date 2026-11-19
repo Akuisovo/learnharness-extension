@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   splitMarkdown, collectSources, sourceStrings, blocksFromView,
   tableToMarkdown, fenceSources, captureFromElement, readSelection, topLevelCaptures, previewBlock,
-  diagramSources, findRegions, regionToBlock, rectsOverlap,
+  diagramSources, findRegions, regionToBlock, rectsOverlap, REGION_SELECTOR,
 } from '../src/main.js';
 
 test('splitMarkdown finds pipe tables with and without outer pipes', () => {
@@ -117,6 +117,17 @@ test('diagramSources reads Mermaid from plan tool inputs as well as Markdown fen
   assert.ok(sources.some(source => source.includes('E-->F')));
 });
 
+test('REGION_SELECTOR covers settled-session DOM shapes as well as fresh ones', () => {
+  for (const selector of [
+    '.lh-prose', '[data-testid="user-message"]', '[data-source-message-id]',
+    '[data-testid="tool-call-card"]', '[data-testid="answered-card"]',
+    '[data-testid="submitted-images"] img', '[data-streamdown="image-wrapper"]',
+    '[data-testid="md-mermaid"]', 'table', '[data-streamdown="code-block"]',
+  ]) {
+    assert.ok(REGION_SELECTOR.includes(selector), `missing selector: ${selector}`);
+  }
+});
+
 test('findRegions keeps structured blocks ahead of their transcript wrappers', () => {
   const selectors = {
     table: ['table[data-streamdown="table"]', 'table'],
@@ -139,6 +150,26 @@ test('findRegions keeps structured blocks ahead of their transcript wrappers', (
   assert.deepEqual(regions.map(region => region.diagramIndex), [-1, -1, 0]);
 });
 
+test('findRegions merges transcript roots with hit-tested nodes and drops hidden ones', () => {
+  const make = (kind, rect = { width: 100, height: 20 }) => ({
+    matches: value => value.split(', ').some(part => [kind].includes(part)),
+    contains: () => false,
+    closest: () => null,
+    getBoundingClientRect: () => rect,
+  });
+  const paragraph = make('p');
+  const collapsed = make('p', { width: 0, height: 0 });
+  const roots = [
+    { querySelectorAll: () => [paragraph] },
+    { querySelectorAll: () => [collapsed] },
+  ];
+  const hit = make('p');
+  const regions = findRegions(...roots, { querySelectorAll: () => [hit] });
+  assert.equal(regions.length, 2);
+  assert.ok(regions.some(region => region.node === hit));
+  assert.ok(!regions.some(region => region.node === collapsed));
+});
+
 test('regionToBlock reproduces tables, diagrams, code and text', () => {
   const cell = text => ({ textContent: text });
   const row = cells => ({ querySelectorAll: () => cells });
@@ -152,9 +183,18 @@ test('regionToBlock reproduces tables, diagrams, code and text', () => {
   assert.match(regionToBlock({ type: 'table', node: table }).markdown, /\| A \| B \|/);
 
   const sources = ['```mermaid\ngraph LR; A-->B\n```'];
-  const diagram = { type: 'diagram', node: { outerHTML: '<div/>', textContent: '' }, diagramIndex: 0 };
+  const diagram = { type: 'diagram', node: {
+    outerHTML: '<div/>', textContent: 'graph TB; X-->Y',
+    querySelector: () => null,
+  }, diagramIndex: 0 };
   assert.equal(regionToBlock(diagram, sources).markdown, sources[0]);
-  assert.match(regionToBlock({ ...diagram, diagramIndex: 1 }, sources).markdown, /<div\/>/);
+  assert.match(regionToBlock({ ...diagram, diagramIndex: 1 }, sources).markdown, /graph TB; X-->Y/);
+
+  const image = { type: 'diagram', isImage: true, node: {
+    matches: () => false,
+    querySelector: () => ({ getAttribute: name => name === 'src' ? 'https://example.com/a.png' : 'Chart' }),
+  } };
+  assert.equal(regionToBlock(image).markdown, '![Chart](https://example.com/a.png)');
 
   const code = { type: 'code', node: {
     getAttribute: () => 'js', querySelector: () => ({ textContent: 'const x = 1;' }), textContent: '',

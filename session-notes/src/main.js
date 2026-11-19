@@ -245,44 +245,78 @@ export function previewBlock(block) {
   return value.slice(0, 220) || (block?.caption || block?.type || 'Empty block');
 }
 
-/** Native transcript elements that can be turned into note blocks. */
+/** Native transcript elements that can be turned into note blocks.
+ * Kept deliberately broad: settled/older sessions contain more tool cards,
+ * plain user prose, submitted images and collapsed content than fresh ones. */
 export const REGION_SELECTOR = [
-  'table[data-streamdown="table"]', 'table',
-  '[data-testid="md-mermaid"]', '[data-streamdown="mermaid"]',
-  '[data-streamdown="code-block"]',
+  // Structured blocks.
+  'table', '[data-testid="md-table"]', '[data-streamdown="table-wrapper"]',
+  '[data-testid="md-mermaid"]', '[data-streamdown="mermaid"]', '[data-streamdown="mermaid-error"]',
+  '[data-streamdown="code-block"]', '[data-testid="md-code"]',
   '[data-streamdown="image-wrapper"]', 'img[data-streamdown="image"]',
-  '[data-source-message-id]', '[data-testid="user-message"]',
-  'p', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-  '[data-testid="md-math"]', '[data-streamdown="blockquote"]',
+  '[data-testid="submitted-images"] img',
+  // Message and card rows.
+  '[data-source-message-id]', '.lh-source-passage', '[data-testid="user-message"]',
+  '[data-testid="tool-call-card"]', '[data-tool]', '[data-testid="answered-card"]',
+  '[data-testid="tucked-explanation"]', '[data-testid="practice-next-line"]',
+  // Prose (assistant paragraphs are plain <p>; user prose is .lh-prose).
+  '.lh-prose', 'p', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  '[data-streamdown^="heading-"]', '[data-streamdown="list-item"]',
+  '[data-testid="md-math"]', '[data-streamdown="blockquote"]', 'pre',
 ].join(', ');
 
 const regionMatches = {
   table: 'table',
-  diagram: '[data-testid="md-mermaid"], [data-streamdown="mermaid"], [data-streamdown="image-wrapper"], img[data-streamdown="image"]',
+  mermaid: '[data-testid="md-mermaid"], [data-streamdown="mermaid"], [data-streamdown="mermaid-error"]',
   code: '[data-streamdown="code-block"]',
+  image: '[data-streamdown="image-wrapper"], img[data-streamdown="image"], [data-testid="submitted-images"] img',
 };
 
 export function regionType(node) {
-  for (const [type, selector] of Object.entries(regionMatches)) {
-    if (node.matches?.(selector)) return type;
-  }
+  if (node.matches?.('table')) return 'table';
+  if (node.matches?.(regionMatches.mermaid)) return 'diagram';
+  if (node.matches?.(regionMatches.code)) return 'code';
+  if (node.matches?.(regionMatches.image)) return 'diagram';
   return 'text';
 }
 
-/** Higher priority wins when boxes overlap, so a table is not hidden by its paragraph wrapper. */
+const HIGH_PRIORITY = [
+  'table', regionMatches.mermaid, regionMatches.code, regionMatches.image,
+  '[data-testid="md-math"]', 'pre',
+].join(', ');
+const MEDIUM_PRIORITY = 'p, li, h1, h2, h3, h4, h5, h6, [data-streamdown^="heading-"], [data-streamdown="list-item"], [data-streamdown="blockquote"]';
+
+/** Higher priority wins when boxes overlap, so a table is not hidden by its wrapper. */
 function regionPriority(node) {
-  if (node.matches?.('table')) return 3;
-  if (node.matches?.(regionMatches.diagram)) return 3;
-  if (node.matches?.(regionMatches.code)) return 3;
-  if (node.matches?.('p, li, h1, h2, h3, h4, h5, h6, [data-testid="md-math"], [data-streamdown="blockquote"]')) return 2;
+  if (node.matches?.(HIGH_PRIORITY)) return 3;
+  if (node.matches?.(MEDIUM_PRIORITY)) return 2;
   return 1;
 }
 
-/** Detect selectable element regions inside the native transcript DOM. */
-export function findRegions(scope) {
-  const nodes = [...(scope?.querySelectorAll?.(REGION_SELECTOR) ?? [])]
-    .filter(node => !node.closest?.('[data-plugin-session-surface], [data-session-surface-mounts]'));
-  const info = nodes.map(node => ({ node, type: regionType(node), priority: regionPriority(node) }));
+/** Skip hidden/collapsed nodes so they never become zero-size, unclickable boxes. */
+function regionVisible(node) {
+  const rect = node.getBoundingClientRect?.();
+  if (rect && (rect.width < 2 || rect.height < 2)) return false;
+  const style = globalThis.getComputedStyle?.(node);
+  if (style && (style.display === 'none' || style.visibility === 'hidden'
+    || style.visibility === 'collapse' || style.contentVisibility === 'hidden')) return false;
+  if (node.closest?.('[hidden], [data-session-find-exclude], [role="dialog"], .sr-only')) return false;
+  const closed = node.closest?.('details:not([open])');
+  if (closed && closed !== node) return false;
+  return true;
+}
+
+/** Detect selectable element regions inside the native transcript DOM.
+ * `scope` may be an Element or any object exposing querySelectorAll. */
+export function findRegions(...scopes) {
+  const nodes = [];
+  for (const scope of scopes) {
+    nodes.push(...(scope?.querySelectorAll?.(REGION_SELECTOR) ?? []));
+  }
+  const unique = [...new Set(nodes)]
+    .filter(node => !node.closest?.('[data-plugin-session-surface], [data-session-surface-mounts]'))
+    .filter(regionVisible);
+  const info = unique.map(node => ({ node, type: regionType(node), priority: regionPriority(node) }));
   const kept = info.filter(({ node, priority }) => !info.some(other =>
     other.node !== node && (
       (other.priority > priority && other.node.contains?.(node))
@@ -290,11 +324,16 @@ export function findRegions(scope) {
       || (priority < 3 && other.priority === 3 && node.contains?.(other.node))
     )));
   let diagramIndex = -1;
-  return kept.map(({ node, type }) => ({
-    node, type,
-    label: type === 'table' ? 'Table' : type === 'diagram' ? 'Diagram' : type === 'code' ? 'Code' : 'Text',
-    diagramIndex: type === 'diagram' ? ++diagramIndex : -1,
-  })).slice(0, 300);
+  return kept.map(({ node, type }) => {
+    const isMermaid = node.matches?.(regionMatches.mermaid);
+    const isImage = node.matches?.(regionMatches.image);
+    return {
+      node, type,
+      isImage,
+      label: isImage ? 'Image' : type === 'table' ? 'Table' : type === 'diagram' ? 'Diagram' : type === 'code' ? 'Code' : 'Text',
+      diagramIndex: isMermaid ? ++diagramIndex : -1,
+    };
+  }).slice(0, 300);
 }
 
 /** Turn a selected DOM region into a note block. Diagrams keep their Mermaid source. */
@@ -305,8 +344,19 @@ export function regionToBlock(region, mermaidSources = []) {
     return { type: 'table', markdown: tableToMarkdown(node), caption: 'Table' };
   }
   if (type === 'diagram') {
+    if (region.isImage || node.matches?.('[data-streamdown="image-wrapper"], img[data-streamdown="image"], [data-testid="submitted-images"] img')) {
+      const img = node.matches?.('img') ? node : node.querySelector?.('img');
+      const src = img?.getAttribute?.('src') || img?.src || '';
+      const alt = img?.getAttribute?.('alt') || 'Image';
+      if (src && !src.startsWith('data:')) {
+        return { type: 'diagram', markdown: `![${alt}](${src})`, caption: 'Image' };
+      }
+      return { type: 'diagram', markdown: `\`\`\`html\n${node.outerHTML || img?.outerHTML || ''}\n\`\`\``, caption: 'Image' };
+    }
     const index = region.diagramIndex ?? 0;
-    const markdown = mermaidSources[index] || `\`\`\`html\n${node.outerHTML || node.textContent || ''}\n\`\`\``;
+    const source = index >= 0 ? mermaidSources[index] : '';
+    const fallback = String(node.querySelector?.('pre')?.textContent || node.innerText || node.textContent || '').trim();
+    const markdown = source || `\`\`\`mermaid\n${fallback}\n\`\`\``;
     return { type: 'diagram', markdown, caption: 'Diagram' };
   }
   if (type === 'code') {
@@ -655,7 +705,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          status.textContent = `v0.1.5 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          status.textContent = `v0.1.6 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           debug.textContent = `debug · scope=${scopeLabel} found=${rawHits} clicks=${clickCount}`
             + (detectError ? ` · error: ${detectError}` : '');
           addHandle.update({ disabled: !selected.size });
@@ -686,7 +736,7 @@ export function activate(ctx) {
         };
         /** Find real transcript elements under the overlay by temporarily making
          * the surface transparent to hit-testing. Works even if host selectors change. */
-        const hitTestRegions = () => {
+        const hitTestRegions = roots => {
           const frame = canvas.closest('[data-plugin-session-surface-frame]');
           const base = canvas.getBoundingClientRect();
           const oldFrame = frame?.style.pointerEvents;
@@ -699,7 +749,9 @@ export function activate(ctx) {
               for (let x = base.left + 4; x < base.right - 4; x += 56) {
                 let node = document.elementFromPoint?.(x, y);
                 while (node && !node.matches?.(REGION_SELECTOR)) node = node.parentElement;
-                if (node && !node.closest?.('[data-plugin-session-surface]')) found.add(node);
+                // Never pick chrome outside the transcript — that was the source
+                // of apparently random regions on some sessions.
+                if (node && roots.some(root => root === node || root.contains(node))) found.add(node);
               }
             }
           } catch (error) {
@@ -736,23 +788,26 @@ export function activate(ctx) {
           detectError = '';
           for (const box of boxes.values()) box.remove();
           boxes = new Map();
-          const transcript = document.querySelector('[data-session-find-root]')
-            || document.querySelector('[role="log"]') || document.body;
-          scopeLabel = transcript === document.body ? 'body'
-            : transcript.hasAttribute?.('data-session-find-root') !== false ? 'find-root' : 'log';
-          let nodes = [];
+          // The main transcript is the find-root inside role="log". A question
+          // dock can also carry data-session-find-root; querying only the first
+          // match in document order could pick the wrong subtree on some sessions.
+          const log = document.querySelector('[role="log"]');
+          const logRoots = log ? [...log.querySelectorAll('[data-session-find-root]')] : [];
+          let roots = logRoots.length ? logRoots : [...document.querySelectorAll('[data-session-find-root]')];
+          if (!roots.length && log) roots = [log];
+          scopeLabel = roots.length
+            ? (logRoots.length ? `log/find-root×${roots.length}` : 'find-root')
+            : 'no-transcript';
+          const selectorNodes = [];
+          for (const root of roots) selectorNodes.push(...root.querySelectorAll(REGION_SELECTOR));
+          let hitNodes = [];
           try {
-            nodes = [...(transcript.querySelectorAll?.(REGION_SELECTOR) ?? [])];
-            if (!nodes.length && transcript !== document.body) {
-              nodes = [...document.body.querySelectorAll(REGION_SELECTOR)];
-              scopeLabel += '+body';
-            }
-            for (const node of hitTestRegions()) nodes.push(node);
+            hitNodes = hitTestRegions(roots);
           } catch (error) {
             detectError = String(error?.message || error);
           }
-          rawHits = nodes.length;
-          regions = findRegions({ querySelectorAll: () => [...new Set(nodes)] });
+          rawHits = new Set([...selectorNodes, ...hitNodes]).size;
+          regions = findRegions(...roots, { querySelectorAll: () => hitNodes });
           for (const region of regions) addBox(region);
           layout();
           // The frame can still be sizing when content mounts. Always re-layout,
