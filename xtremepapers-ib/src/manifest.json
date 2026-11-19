@@ -1,0 +1,12 @@
+{
+  "apiVersion": 1,
+  "id": "xtremepapers-ib",
+  "name": "XtremePapers IB past papers",
+  "version": "0.1.0",
+  "minAppVersion": "0.6.1",
+  "description": "Search the public papers.xtremepape.rs archive of IB past papers and question banks by topic, then pose real exam questions. No login required; stores only locally saved items.",
+  "author": "local",
+  "main": "main.js",
+  "backend": "backend.cjs",
+  "styles": "styles.css"
+}

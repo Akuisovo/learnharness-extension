@@ -2,13 +2,15 @@
   "name": "learnharness-extensions",
   "version": "0.1.0",
   "private": true,
-  "description": "Monorepo for LearnHarness past-paper extensions: RevisionHub and IB Docs.",
+  "description": "Monorepo for LearnHarness past-paper extensions: RevisionHub, IB Docs, and XtremePapers IB.",
   "scripts": {
     "build:revisionhub": "npm --prefix revisionhub-pastpapers run build",
     "build:ibdocs": "npm --prefix ibdocs-pastpapers run build",
-    "build": "npm run build:revisionhub && npm run build:ibdocs",
+    "build:xtremepapers": "npm --prefix xtremepapers-ib run build",
+    "build": "npm run build:revisionhub && npm run build:ibdocs && npm run build:xtremepapers",
     "test:revisionhub": "npm --prefix revisionhub-pastpapers test",
     "test:ibdocs": "npm --prefix ibdocs-pastpapers test",
-    "test": "npm run test:revisionhub && npm run test:ibdocs"
+    "test:xtremepapers": "npm --prefix xtremepapers-ib test",
+    "test": "npm run test:revisionhub && npm run test:ibdocs && npm run test:xtremepapers"
   }
 }
