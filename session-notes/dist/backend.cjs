@@ -165,6 +165,21 @@ function activate(ctx) {
     }) };
   });
 
+  /** Append several captured blocks in one atomic change (used by the block picker). */
+  register('add-blocks', input => {
+    if (!Array.isArray(input.blocks) || !input.blocks.length) fail('At least one block is required.');
+    if (input.blocks.length > 200) fail('Too many blocks (maximum 200).');
+    const blocks = input.blocks.map(normalizeBlock);
+    return { note: change(s => {
+      const target = note(s, input.id);
+      target.blocks = target.blocks ?? [];
+      if (target.blocks.length + blocks.length > 200) fail('This note cannot hold more than 200 blocks.');
+      target.blocks.push(...blocks);
+      target.updatedAt = stamp();
+      return target;
+    }) };
+  });
+
   register('delete-note', input => {
     change(s => { note(s, input.id); delete s.notes[input.id]; });
     return { ok: true };

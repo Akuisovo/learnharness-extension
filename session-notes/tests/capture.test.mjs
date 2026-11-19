@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   splitMarkdown, collectSources, sourceStrings, blocksFromView,
-  tableToMarkdown, fenceSources, captureFromElement, readSelection, topLevelCaptures,
+  tableToMarkdown, fenceSources, captureFromElement, readSelection, topLevelCaptures, previewBlock,
 } from '../src/main.js';
 
 test('splitMarkdown finds pipe tables with and without outer pipes', () => {
@@ -91,6 +91,13 @@ test('captureFromElement prefers the original diagram source and skips nested ma
   const nested = { matches: selector => selector === 'table', contains: other => other === inner, textContent: 'x' };
   const inner = { matches: selector => selector === 'svg', contains: () => false, outerHTML: '<svg/>' };
   assert.deepEqual(topLevelCaptures({ querySelectorAll: () => [nested, inner] }), [nested]);
+});
+
+test('previewBlock makes a short plain-text label for the picker', () => {
+  assert.equal(previewBlock({ type: 'table', markdown: '| A | B |\n|---|---|\n| 1 | 2 |' }), 'A B 1 2');
+  assert.equal(previewBlock({ type: 'diagram', markdown: '```mermaid\ngraph TD; A-->B\n```' }), 'graph TD; A-->B');
+  assert.equal(previewBlock({ type: 'text', markdown: '**Bold** and `code`' }), 'Bold and code');
+  assert.equal(previewBlock({ type: 'code', markdown: '' }), 'code');
 });
 
 test('readSelection reads from shadow DOM scopes as well as the document', () => {

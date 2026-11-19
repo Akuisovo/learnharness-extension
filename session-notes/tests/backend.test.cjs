@@ -35,7 +35,7 @@ function harness() {
 
 test('activate registers every documented operation', () => {
   const { handlers } = harness();
-  for (const name of ['get-state', 'get-catalog', 'get-note', 'create-note', 'save-note', 'add-block', 'delete-note', 'search-notes', 'save-settings', 'clear-notes']) {
+  for (const name of ['get-state', 'get-catalog', 'get-note', 'create-note', 'save-note', 'add-block', 'add-blocks', 'delete-note', 'search-notes', 'save-settings', 'clear-notes']) {
     assert.equal(typeof handlers.get(name), 'function', `missing ${name}`);
   }
 });
@@ -77,6 +77,23 @@ test('add-block appends a captured block and emits a change', () => {
   assert.equal(updated.blocks[0].type, 'diagram');
   assert.ok(emitted.length > before);
   assert.equal(call('get-note', { id: note.id }).note.blocks.length, 1);
+});
+
+test('add-blocks appends several blocks in one change and validates input', () => {
+  const { call, emitted } = harness();
+  const { note } = call('create-note', { title: 'Batch' });
+  const before = emitted.length;
+  const updated = call('add-blocks', {
+    id: note.id,
+    blocks: [
+      { type: 'table', markdown: '| a | b |\n|---|---|' },
+      { type: 'diagram', markdown: '```mermaid\ngraph LR; A-->B\n```' },
+    ],
+  }).note;
+  assert.deepEqual(updated.blocks.map(block => block.type), ['table', 'diagram']);
+  assert.equal(call('get-note', { id: note.id }).note.blocks.length, 2);
+  assert.equal(emitted.length, before + 1);
+  assert.throws(() => call('add-blocks', { id: note.id, blocks: [] }), /At least one block/);
 });
 
 test('save-note updates allowed fields and rejects unknown fields', () => {

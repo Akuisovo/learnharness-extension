@@ -238,4 +238,68 @@
 .sn-capture-kind { font-size: 0.7rem; color: var(--muted-text, rgba(127, 127, 127, 1)); text-transform: uppercase; letter-spacing: 0.04em; }
 .sn-capture-icon svg { width: 1rem; height: 1rem; }
 
+/* Lightweight block picker (default Add to notes flow). */
+.sn-pick-toolbar,
+.sn-pick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.sn-pick-filters { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+
+.sn-pick-filter,
+.sn-pick-action {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+  border-radius: 0.35rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.sn-pick-filter.is-active { background: var(--muted-bg, rgba(127, 127, 127, 0.2)); font-weight: 600; }
+.sn-pick-action:hover,
+.sn-pick-filter:hover { background: var(--muted-bg, rgba(127, 127, 127, 0.12)); }
+
+.sn-pick-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.sn-pick-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  border-radius: 0.4rem;
+  cursor: pointer;
+}
+
+.sn-pick-row:hover { background: var(--muted-bg, rgba(127, 127, 127, 0.1)); }
+.sn-pick-check { margin: 0; }
+.sn-pick-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.sn-pick-badge {
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.3rem;
+  background: var(--muted-bg, rgba(127, 127, 127, 0.15));
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sn-pick-table { background: rgba(105, 168, 230, 0.18); }
+.sn-pick-diagram { background: rgba(160, 120, 220, 0.18); }
+.sn-pick-code { background: rgba(120, 190, 140, 0.18); }
+
 .sn-settings { display: flex; flex-direction: column; gap: 0.75rem; max-width: 34rem; }

@@ -214,6 +214,21 @@ export function readSelection(target, fallbackRoot) {
   return best.slice(0, 8000);
 }
 
+/** Short plain-text preview for the lightweight picker. No Markdown rendering. */
+export function previewBlock(block) {
+  let value = String(block?.markdown || '');
+  if (block?.type === 'diagram' || block?.type === 'code') {
+    value = value.replace(/^\s*[`~]{3,}[^\n]*\n?/, '').replace(/\n?[`~]{3,}\s*$/, '');
+  }
+  value = value
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/gm, ' ')
+    .replace(/[|`*_#]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return value.slice(0, 220) || (block?.caption || block?.type || 'Empty block');
+}
+
 const localMatch = (note, query) => {
   if (!query) return true;
   const haystack = [note.title, note.text, note.sessionTitle, ...(note.topics || []),
@@ -305,26 +320,36 @@ export function activate(ctx) {
     return `${Math.round(hours / 24)}d ago`;
   };
 
-  /** Menu to append a captured block to an existing note or create a new one. */
-  async function addToNoteFlow(anchor, block, signal, session = {}) {
-    if (signal.aborted) return;
+  /** Menu to append one or many captured blocks to an existing note or a new one. */
+  async function addBlocksFlow(anchor, blocks, signal, session = {}, options = {}) {
+    const picked = (Array.isArray(blocks) ? blocks : [blocks]).filter(Boolean);
+    if (signal.aborted || !picked.length) return;
+    const count = picked.length;
+    const single = options.single && count === 1;
+    const noun = count === 1 ? 'block' : 'blocks';
     try {
       if (!snapshot) await loadState();
       const notes = [...(snapshot?.notes || [])].sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
       const items = notes.slice(0, 12).map(note => ({
         key: `note:${note.id}`,
-        label: `Add to ${note.title || 'Untitled note'}`,
-        onSelect: async () => { await mutate('add-block', { id: note.id, block }, signal); },
+        label: single ? `Add to ${note.title || 'Untitled note'}` : `Add ${count} ${noun} to ${note.title || 'Untitled note'}`,
+        onSelect: async () => {
+          if (single) await mutate('add-block', { id: note.id, block: picked[0] }, signal);
+          else await mutate('add-blocks', { id: note.id, blocks: picked }, signal);
+          options.onDone?.();
+        },
       }));
+      const typeTitle = { table: 'Table note', diagram: 'Diagram note', code: 'Code note' }[picked[0]?.type] || 'Session note';
       items.push({
         key: 'new',
-        label: 'New note with this',
+        label: single ? 'New note with this' : `New note with ${count} ${noun}`,
         onSelect: async () => {
           await mutate('create-note', {
-            title: block.type === 'table' ? 'Table note' : block.type === 'diagram' ? 'Diagram note' : 'Session note',
+            title: single ? typeTitle : `Session — ${session.sessionTitle || 'Untitled'}`,
             text: '', sessionId: session.sessionId || '', sessionTitle: session.sessionTitle || '',
-            kind: 'teaching', blocks: [block],
+            kind: session.kind || 'teaching', blocks: picked,
           }, signal);
+          options.onDone?.();
         },
       });
       if (!signal.aborted) ctx.ui.openMenu(anchor, { label: 'Add to note', items }, { signal });
@@ -333,10 +358,17 @@ export function activate(ctx) {
     }
   }
 
-  /** Plugin-owned overlay that mirrors the current session's content for capture. */
-  function openSessionOverlay(context) {
+  const addToNoteFlow = (anchor, block, signal, session = {}) =>
+    addBlocksFlow(anchor, [block], signal, session, { single: true });
+
+  /** Full transcript view: mirrors the session with host Markdown for selection capture.
+   * Kept as an opt-in because rendering every message is expensive in long sessions. */
+  function openFullSessionOverlay(context) {
     if (context?.surface !== 'session' || ctx.signal.aborted) return;
-    const session = { sessionId: context.sessionId || '', sessionTitle: context.view?.title || context.sessionId || '' };
+    const session = {
+      sessionId: context.sessionId || '', sessionTitle: context.view?.title || context.sessionId || '',
+      kind: context.view?.kind || 'teaching',
+    };
     const sources = sourceStrings(context.view);
     const blocks = blocksFromView(context.view);
     const scope = lifetime(ctx.signal);
@@ -466,6 +498,141 @@ export function activate(ctx) {
             || (event.target instanceof HTMLElement ? event.target : root);
           void addToNoteFlow(anchor, { type: 'text', markdown: selected, caption: 'Selected text' }, signal, session);
         }, { capture: true, signal });
+      },
+    };
+    const options = { signal: ctx.signal };
+    if (context.surfaceTarget) ctx.ui.openSurface(context.surfaceTarget, props, options);
+    else ctx.ui.openSurface(props, options);
+    void ensureCatalog();
+  }
+
+  /** Lightweight default flow: pick detected blocks and add them in one batch.
+   * Only plain text rows are rendered — no host Markdown, observers or layout reads. */
+  function openSessionOverlay(context) {
+    if (context?.surface !== 'session' || ctx.signal.aborted) return;
+    const session = {
+      sessionId: context.sessionId || '', sessionTitle: context.view?.title || context.sessionId || '',
+      kind: context.view?.kind || 'teaching',
+    };
+    const blocks = blocksFromView(context.view);
+    const scope = lifetime(ctx.signal);
+    const props = {
+      title: 'Add to notes',
+      background: 'opaque',
+      content: (container, hostSignal) => {
+        const signal = lifetime(scope.signal, hostSignal).signal;
+        const root = el('div', 'sn-overlay sn-picker');
+        container.append(root);
+        const head = el('div', 'sn-overlay-head');
+        head.append(el('h2', 'sn-title', `Add to notes — ${session.sessionTitle || 'Session'}`));
+        head.append(el('span', 'sn-hint', blocks.length
+          ? `Tick the blocks you want, then add them together (${blocks.length} found).`
+          : 'No capturable content was found in this session.'));
+        head.append(el('span', 'sn-spacer'));
+        button(head, 'Full transcript view', () => openFullSessionOverlay(context), signal, { variant: 'ghost' });
+        root.append(head);
+
+        const toolbar = el('div', 'sn-pick-toolbar');
+        const search = el('input', 'sn-search');
+        search.type = 'search';
+        search.placeholder = 'Filter blocks…';
+        search.setAttribute('aria-label', 'Filter blocks');
+        toolbar.append(search);
+        const filterRow = el('div', 'sn-pick-filters');
+        toolbar.append(filterRow);
+        root.append(toolbar);
+
+        const actions = el('div', 'sn-pick-actions');
+        const selectAll = el('button', 'sn-pick-action', 'Select visible');
+        selectAll.type = 'button';
+        const clearAll = el('button', 'sn-pick-action', 'Clear');
+        clearAll.type = 'button';
+        const status = el('span', 'sn-hint', '0 selected');
+        const addSlot = el('span', 'sn-button-slot');
+        actions.append(selectAll, clearAll, status, el('span', 'sn-spacer'), addSlot);
+        root.append(actions);
+
+        const list = el('div', 'sn-pick-list');
+        root.append(list);
+        const empty = el('p', 'sn-empty', 'No blocks match this filter.');
+        list.append(empty);
+        const picked = new Set();
+        const rows = [];
+        for (const [index, block] of blocks.entries()) {
+          const row = el('label', 'sn-pick-row');
+          const checkbox = el('input', 'sn-pick-check');
+          checkbox.type = 'checkbox';
+          checkbox.addEventListener('change', () => {
+            if (checkbox.checked) picked.add(index);
+            else picked.delete(index);
+            updateStatus();
+          }, { signal });
+          row.append(checkbox);
+          row.append(el('span', `sn-pick-badge sn-pick-${block.type || 'text'}`, block.type || 'text'));
+          row.append(el('span', 'sn-pick-preview', previewBlock(block)));
+          list.append(row);
+          rows.push({ row, index, block, checkbox });
+        }
+        empty.hidden = blocks.length > 0;
+
+        let activeFilter = 'all';
+        const filterButtons = new Map();
+        for (const [value, label] of [['all', 'All'], ['text', 'Text'], ['table', 'Tables'], ['diagram', 'Diagrams'], ['code', 'Code']]) {
+          const filterButton = el('button', 'sn-pick-filter', label);
+          filterButton.type = 'button';
+          filterButton.addEventListener('click', () => {
+            activeFilter = value;
+            for (const [key, node] of filterButtons) node.classList.toggle('is-active', key === value);
+            applyFilter();
+          }, { signal });
+          filterButtons.set(value, filterButton);
+          filterRow.append(filterButton);
+        }
+        filterButtons.get('all').classList.add('is-active');
+
+        const selectedBlocks = () => blocks.filter((_, index) => picked.has(index));
+        const updateStatus = () => {
+          status.textContent = `${picked.size} selected`;
+          addHandle.update({ disabled: !picked.size });
+        };
+        const applyFilter = () => {
+          const query = search.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+          let shown = 0;
+          for (const { row, block } of rows) {
+            const typeOk = activeFilter === 'all' || block.type === activeFilter;
+            const haystack = `${block.caption || ''} ${block.markdown || ''}`.toLocaleLowerCase();
+            const textOk = !query.length || query.every(term => haystack.includes(term));
+            row.hidden = !typeOk || !textOk;
+            if (!row.hidden) shown += 1;
+          }
+          empty.hidden = shown > 0;
+        };
+        const clearSelection = () => {
+          picked.clear();
+          for (const { checkbox } of rows) checkbox.checked = false;
+          updateStatus();
+        };
+        const addHandle = widget(ctx.ui.mountButton(addSlot, {
+          label: 'Add selected to note', size: 'sm', variant: 'outline', disabled: true,
+          onClick: async () => {
+            const chosen = selectedBlocks();
+            if (!chosen.length || signal.aborted) return;
+            await addBlocksFlow(addSlot, chosen, signal, session, { onDone: clearSelection });
+            addHandle.update({ disabled: !picked.size });
+          },
+        }, { signal }), signal);
+
+        search.addEventListener('input', applyFilter, { signal });
+        selectAll.addEventListener('click', () => {
+          for (const { row, index, checkbox } of rows) {
+            if (row.hidden) continue;
+            picked.add(index);
+            checkbox.checked = true;
+          }
+          updateStatus();
+        }, { signal });
+        clearAll.addEventListener('click', clearSelection, { signal });
+        updateStatus();
       },
     };
     const options = { signal: ctx.signal };

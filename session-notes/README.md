@@ -10,18 +10,17 @@ by session or by knowledge-web topic/node, and supports full-text search.
 - **Sidebar place.** The **Notes** action is placed in the sidebar. Click it to
   open the Notes view: a grouped list on the left and an editor on the right.
 - **Add from a session.** In a teaching or practice session, use the top-bar
-  **Add to notes** action. It opens a plugin-owned overlay that mirrors the
-  current session's content:
-  - highlight text **inside this overlay** and **right-click → Add to note** to
-    capture the selection. A capture-phase listener plus a tracked selection keep
-    this working even if the host intercepts right-click; the **Add selection to
-    note** button in the overlay header is an always-available equivalent.
-  - click the small note icon on the left of any rendered block. Icons are placed
-    beside every table, Mermaid diagram, code block and image the host actually
-    renders — including ones from tool outputs — by inspecting the rendered DOM,
-    not just Markdown text. Tables keep their structure; diagrams keep their source.
-  A captured block can be appended to an existing note or used to create a new
-  one. **Save whole session** stores every block in one note.
+  **Add to notes** action. It opens a lightweight **block picker**:
+  - every detected text, table, diagram and code block appears as a plain row
+    with a checkbox, a type badge and a short preview — no Markdown or diagrams
+    are rendered, so even long sessions open quickly;
+  - filter by type or search text, tick the blocks you want (**Select visible**
+    selects everything currently shown), then use **Add selected to note** to
+    append them all to an existing note or create one new note with them.
+  - **Full transcript view** is available from the picker header when you prefer
+    the older flow: highlight text and **right-click → Add to note**, or click a
+    note icon beside any rendered table/diagram/code block. That view renders the
+    whole session, so it is slower on long sessions.
 - **Organisation.** Switch between **By session**, **By topic**, and **By
   knowledge node**. Topics can be typed (with suggestions from the knowledge
   web's clusters); nodes are chosen with the native knowledge picker and map to
