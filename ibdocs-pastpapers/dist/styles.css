@@ -1,0 +1,67 @@
+.ib-pp-settings { padding: .5rem 0; color: var(--foreground); }
+.ib-pp-settings h2 { font-size: 1.25rem; margin-bottom: .5rem; }
+.ib-pp-settings h3 { font-size: 1rem; margin: 1rem 0 .5rem; }
+.ib-pp-settings p { margin: .5rem 0; line-height: 1.5; }
+.ib-pp-label { display: block; font-weight: 600; margin: .75rem 0 .25rem; }
+.ib-pp-settings textarea,
+.ib-pp-editor textarea,
+.ib-pp-test input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: .25rem;
+  background: var(--background);
+  color: var(--foreground);
+  padding: .5rem;
+  font: inherit;
+}
+.ib-pp-test { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin: .5rem 0; }
+.ib-pp-test input { flex: 1 1 20rem; }
+.ib-pp-settings button,
+.ib-pp-view button {
+  border: 1px solid var(--border);
+  border-radius: .25rem;
+  background: var(--background);
+  color: var(--foreground);
+  padding: .4rem .75rem;
+  cursor: pointer;
+}
+.ib-pp-settings button:disabled { opacity: .5; cursor: default; }
+.ib-pp-settings ul { list-style: disc; padding-left: 1.25rem; }
+.ib-pp-settings li { margin: .5rem 0; }
+.ib-pp-settings small { display: block; color: var(--muted-foreground); }
+.ib-pp-settings .ib-pp-diag-output {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .8rem;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 8rem;
+  white-space: pre;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: .25rem;
+  background: var(--background);
+  color: var(--foreground);
+  padding: .5rem;
+}
+
+.ib-pp-view { padding: 1.5rem; color: var(--foreground); }
+.ib-pp-view h1 { font-size: 1.5rem; margin-bottom: .75rem; }
+.ib-pp-list { margin-top: 1rem; }
+.ib-pp-card { border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
+.ib-pp-card h2 { font-size: 1.1rem; margin-bottom: .5rem; }
+.ib-pp-card h3 { font-size: 1rem; margin: .75rem 0 .25rem; }
+
+.ib-pp-question, .ib-pp-answered, .ib-pp-editor { padding: .25rem 0; color: var(--foreground); }
+.ib-pp-question h3, .ib-pp-answered h3 { font-size: 1rem; margin: .75rem 0 .25rem; }
+.ib-pp-meta { font-size: .85rem; color: var(--muted-foreground); margin-bottom: .5rem; }
+.ib-pp-markdown {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 60vh;
+  overflow-y: auto;
+  margin: .25rem 0;
+  font: inherit;
+}
+.ib-pp-source { display: inline-block; font-size: .85rem; color: var(--primary); word-break: break-all; margin-top: .5rem; }
+.ib-pp-grading { margin-top: .75rem; font-size: .9rem; color: var(--muted-foreground); }

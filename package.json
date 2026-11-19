@@ -1,11 +1,14 @@
 {
-  "name": "revisionhub-pastpapers",
+  "name": "learnharness-extensions",
   "version": "0.1.0",
   "private": true,
-  "description": "LearnHarness extension that fetches IB past-paper questions from RevisionHub for question generation.",
+  "description": "Monorepo for LearnHarness past-paper extensions: RevisionHub and IB Docs.",
   "scripts": {
-    "build": "node scripts/build.mjs",
-    "install:local": "npm run build && node scripts/install-plugin-local.mjs",
-    "test": "node --test tests/*.test.cjs"
+    "build:revisionhub": "npm --prefix revisionhub-pastpapers run build",
+    "build:ibdocs": "npm --prefix ibdocs-pastpapers run build",
+    "build": "npm run build:revisionhub && npm run build:ibdocs",
+    "test:revisionhub": "npm --prefix revisionhub-pastpapers test",
+    "test:ibdocs": "npm --prefix ibdocs-pastpapers test",
+    "test": "npm run test:revisionhub && npm run test:ibdocs"
   }
 }
