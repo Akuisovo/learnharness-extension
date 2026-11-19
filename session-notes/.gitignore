@@ -1,0 +1,6 @@
+node_modules/
+*.log
+.DS_Store
+
+# Local plugin state (installed copies keep their own data/ directory).
+data/
