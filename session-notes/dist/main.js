@@ -307,10 +307,11 @@ function regionVisible(node) {
 }
 
 /** Detect selectable element regions inside the native transcript DOM.
- * `scope` may be an Element or any object exposing querySelectorAll. */
+ * `scope` may be an Element, a { querySelectorAll } object, or an array of nodes. */
 export function findRegions(...scopes) {
   const nodes = [];
   for (const scope of scopes) {
+    if (Array.isArray(scope)) { nodes.push(...scope); continue; }
     nodes.push(...(scope?.querySelectorAll?.(REGION_SELECTOR) ?? []));
   }
   const unique = [...new Set(nodes)]
@@ -319,8 +320,11 @@ export function findRegions(...scopes) {
   const info = unique.map(node => ({ node, type: regionType(node), priority: regionPriority(node) }));
   const kept = info.filter(({ node, priority }) => !info.some(other =>
     other.node !== node && (
+      // Another element wraps this one and is a better/more specific capture.
       (other.priority > priority && other.node.contains?.(node))
-      || (other.priority === priority && other.node.contains?.(node))
+      // Prefer the more specific child when a wrapper contains it.
+      || (other.priority >= priority && node.contains?.(other.node))
+      // A structured child (table/diagram/code) should replace its text wrapper.
       || (priority < 3 && other.priority === 3 && node.contains?.(other.node))
     )));
   let diagramIndex = -1;
@@ -721,7 +725,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          status.textContent = `v0.1.7 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          status.textContent = `v0.1.8 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           debug.textContent = `debug · scope=${scopeLabel} found=${rawHits} clicks=${clickCount}`
             + (detectError ? ` · error: ${detectError}` : '')
             + (notice ? ` · ${notice}` : '');
@@ -765,10 +769,29 @@ export function activate(ctx) {
             for (let y = base.top + 4; y < base.bottom - 4; y += 28) {
               for (let x = base.left + 4; x < base.right - 4; x += 56) {
                 let node = document.elementFromPoint?.(x, y);
-                while (node && !node.matches?.(REGION_SELECTOR)) node = node.parentElement;
-                // Never pick chrome outside the transcript — that was the source
-                // of apparently random regions on some sessions.
-                if (node && roots.some(root => root === node || root.contains(node))) found.add(node);
+                let matched = null;
+                let probe = node;
+                while (probe) {
+                  if (probe.matches?.(REGION_SELECTOR)) { matched = probe; break; }
+                  probe = probe.parentElement;
+                }
+                // Fallback: pick any reasonably-sized text block inside transcript.
+                if (!matched) {
+                  probe = node;
+                  while (probe && probe !== document.body) {
+                    if (roots.some(root => root === probe || root.contains(probe))) {
+                      const text = String(probe.innerText || probe.textContent || '').trim();
+                      const rect = probe.getBoundingClientRect?.();
+                      if (text.length > 12 && rect && rect.width > 40 && rect.height > 12
+                        && !probe.closest?.('[data-plugin-session-surface], button, [role="button"]')) {
+                        matched = probe;
+                      }
+                      break;
+                    }
+                    probe = probe.parentElement;
+                  }
+                }
+                if (matched && roots.some(root => root === matched || root.contains(matched))) found.add(matched);
               }
             }
           } catch (error) {
@@ -829,7 +852,7 @@ export function activate(ctx) {
             detectError = String(error?.message || error);
           }
           rawHits = new Set([...selectorNodes, ...hitNodes]).size;
-          regions = findRegions(...roots, { querySelectorAll: () => hitNodes });
+          regions = findRegions(...roots, hitNodes);
           for (const region of regions) addBox(region);
           layout();
           // The frame can still be sizing when content mounts. Always re-layout,
@@ -959,16 +982,25 @@ export function activate(ctx) {
             return;
           }
           let node = event.target;
-          while (node && !node.matches?.(REGION_SELECTOR)) node = node.parentElement;
-          if (node && !node.closest?.('[data-plugin-session-surface]')) {
-            const region = findRegions({ querySelectorAll: () => [node] })[0];
-            if (region) {
-              if (!boxes.has(region)) { regions.push(region); addBox(region); }
-              setSelected(region, true);
-              clickCount += 1;
-              layout();
-              updateStatus();
+          while (node && node !== document.body && !node.matches?.(REGION_SELECTOR)) node = node.parentElement;
+          if (!node || node === document.body || node.closest?.('[data-plugin-session-surface]')) {
+            // Last resort: capture the clicked text block directly.
+            node = event.target;
+            while (node && node !== document.body) {
+              const text = String(node.innerText || node.textContent || '').trim();
+              if (text.length > 8 && !node.closest?.('[data-plugin-session-surface], button, [role="button"]')) break;
+              node = node.parentElement;
             }
+          }
+          if (node && node !== document.body && !node.closest?.('[data-plugin-session-surface]')) {
+            const region = findRegions({ querySelectorAll: () => [node] })[0] || {
+              node, type: regionType(node), isImage: false, label: 'Text', diagramIndex: -1,
+            };
+            if (!boxes.has(region)) { regions.push(region); addBox(region); }
+            setSelected(region, true);
+            clickCount += 1;
+            layout();
+            updateStatus();
           }
           setPickMode(false);
         }, { capture: true, signal });

@@ -9,7 +9,7 @@ release.
 | **RevisionHub past papers** | [`revisionhub-pastpapers/`](./revisionhub-pastpapers/) | [`revisionhub-pastpapers-v0.1.0`](https://github.com/Akuisovo/learnharness-extension/releases/tag/revisionhub-pastpapers-v0.1.0) | Your own RevisionHub/Clerk session; renewal from Search.app on macOS |
 | **IB Docs past papers** | [`ibdocs-pastpapers/`](./ibdocs-pastpapers/) | [`ibdocs-pastpapers-v0.1.0`](https://github.com/Akuisovo/learnharness-extension/releases/tag/ibdocs-pastpapers-v0.1.0) | None — ibdocs.re is public |
 | **XtremePapers IB past papers** | [`xtremepapers-ib/`](./xtremepapers-ib/) | [`xtremepapers-ib-v0.1.0`](https://github.com/Akuisovo/learnharness-extension/releases/tag/xtremepapers-ib-v0.1.0) | None — papers.xtremepape.rs is public |
-| **Session Notes** | [`session-notes/`](./session-notes/) | [`session-notes-v0.1.7`](https://github.com/Akuisovo/learnharness-extension/releases/tag/session-notes-v0.1.7) | None — notes are stored locally by the plugin |
+| **Session Notes** | [`session-notes/`](./session-notes/) | [`session-notes-v0.1.8`](https://github.com/Akuisovo/learnharness-extension/releases/tag/session-notes-v0.1.8) | None — notes are stored locally by the plugin |
 
 All extensions target LearnHarness `0.6.1+` and plugin API v1.
 
@@ -51,6 +51,6 @@ and restart LearnHarness (or refresh Community plugins).
 - **RevisionHub Past Papers v0.1.0** — topic search, authenticated question/mark-scheme fetch, and automatic Clerk session renewal.
 - **IB Docs Past Papers v0.1.0** — public ibdocs.re topic search, font-aware PDF decoding, and 2D math reconstruction.
 - **XtremePapers IB Past Papers v0.1.0** — public papers.xtremepape.rs directory search, bounded PDF scan with mark-scheme links, font-aware decoding, and 2D math reconstruction.
-- **Session Notes v0.1.7** — sidebar notes view; transparent screenshot-style region picker with broader transcript-root detection, visible save/error feedback, and text/table/Mermaid reconstruction; organise by session, knowledge-web topic/node; full-text search.
+- **Session Notes v0.1.8** — sidebar notes view; transparent screenshot-style region picker with broader detection, de-duplicated/more accurate capture, visible save/error feedback, and text/table/Mermaid reconstruction; organise by session, knowledge-web topic/node; full-text search.
 
 See each folder's `README.md` for setup and limitations.
