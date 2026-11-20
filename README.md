@@ -8,7 +8,7 @@ release.
 | --- | --- | --- | --- |
 | **IB Docs past papers** | [`ibdocs-pastpapers/`](./ibdocs-pastpapers/) | [`ibdocs-pastpapers-v0.1.0`](https://github.com/Akuisovo/learnharness-extension/releases/tag/ibdocs-pastpapers-v0.1.0) | None — ibdocs.re is public |
 | **XtremePapers IB past papers** | [`xtremepapers-ib/`](./xtremepapers-ib/) | [`xtremepapers-ib-v0.1.0`](https://github.com/Akuisovo/learnharness-extension/releases/tag/xtremepapers-ib-v0.1.0) | None — papers.xtremepape.rs is public |
-| **Session Notes** | [`session-notes/`](./session-notes/) | [`session-notes-v0.1.19`](https://github.com/Akuisovo/learnharness-extension/releases/tag/session-notes-v0.1.19) | None — notes are stored locally by the plugin |
+| **Session Notes** | [`session-notes/`](./session-notes/) | [`session-notes-v0.1.20`](https://github.com/Akuisovo/learnharness-extension/releases/tag/session-notes-v0.1.20) | None — notes are stored locally by the plugin |
 
 All extensions target LearnHarness `0.6.1+` and plugin API v1.
 
@@ -45,6 +45,6 @@ and restart LearnHarness (or refresh Community plugins).
 
 - **IB Docs Past Papers v0.1.0** — public ibdocs.re topic search, font-aware PDF decoding, and 2D math reconstruction.
 - **XtremePapers IB Past Papers v0.1.0** — public papers.xtremepape.rs directory search, bounded PDF scan with mark-scheme links, font-aware decoding, and 2D math reconstruction.
-- **Session Notes v0.1.19** — PDF export from a rendered note preview, with “Place in note” markers so diagrams and text keep their chosen positions; per-block delete, edit, copy and reorder controls; note duplicate and Markdown export; editable tags and saved note sort order; knowledge-web organisation and full-text search. Long-session detection and picker readability improvements are retained.
+- **Session Notes v0.1.20** — PDF export prints a detached copy of the rendered note, so the host dialog chrome cannot clip it; “Place in note” markers keep diagrams, tables and text at their chosen positions. Per-block delete/edit/copy/reorder, note duplicate, Markdown export, editable tags, saved sort order and full-text search are retained.
 
 See each folder's `README.md` for setup and limitations.

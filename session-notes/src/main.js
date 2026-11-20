@@ -313,6 +313,89 @@ async function copyToClipboard(value) {
   } finally { area.remove(); }
 }
 
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[char]));
+
+const PDF_PRINT_CSS = `
+@page { margin: 14mm; }
+html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; color: #000 !important; }
+body * { visibility: visible !important; }
+.sn-print-root, .sn-print-root * {
+  visibility: visible !important;
+  color: #000 !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+.sn-print-root {
+  position: static !important;
+  inset: auto !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: #fff !important;
+  box-shadow: none !important;
+}
+.sn-print-root .sn-markdown { overflow: visible !important; }
+.sn-print-root pre, .sn-print-root code { white-space: pre-wrap !important; overflow-wrap: anywhere !important; }
+.sn-print-root h1, .sn-print-root h2, .sn-print-root h3, .sn-print-root h4,
+.sn-print-root pre, .sn-print-root table, .sn-print-root svg, .sn-print-root img {
+  break-inside: avoid !important;
+  page-break-inside: avoid !important;
+}
+.sn-print-root a { color: #000 !important; text-decoration: none !important; }
+`;
+
+/** Self-contained document used by the hidden print iframe. Host styles are
+ * copied in so host-rendered Mermaid/table/code markup keeps its appearance. */
+export function printableDocumentHtml(bodyHtml, title, styles = '') {
+  const base = globalThis.location?.href ? `<base href="${escapeHtml(globalThis.location.href)}">` : '';
+  const safeStyles = String(styles || '').replace(/<\/style/gi, '<\\/style');
+  return `<!doctype html><html><head><meta charset="utf-8">${base}<title>${escapeHtml(title)}</title>`
+    + `<style>${safeStyles}</style><style>${PDF_PRINT_CSS}</style></head>`
+    + `<body><main class="sn-print-root">${bodyHtml}</main></body></html>`;
+}
+
+function collectStyles() {
+  const rules = [];
+  for (const sheet of globalThis.document?.styleSheets ?? []) {
+    try {
+      for (const rule of sheet.cssRules ?? []) rules.push(rule.cssText);
+    } catch { /* cross-origin stylesheet rules are not readable; skip them */ }
+  }
+  return rules.join('\n');
+}
+
+/** Print a detached copy of rendered note HTML. Printing the host dialog directly
+ * produced blank pages because the modal scroll frame clips its overflow. */
+function printRenderedNote(fragment, title) {
+  const doc = globalThis.document;
+  if (!doc?.body || typeof doc.createElement !== 'function') throw new Error('Printing is unavailable in this host.');
+  const frame = doc.createElement('iframe');
+  frame.setAttribute('aria-hidden', 'true');
+  frame.setAttribute('title', 'Session Notes PDF print frame');
+  frame.style.cssText = 'position:fixed;left:-10000px;top:0;width:1200px;height:1600px;border:0;pointer-events:none;';
+  frame.srcdoc = printableDocumentHtml(fragment.innerHTML, title, collectStyles());
+  let done = false;
+  const cleanup = () => {
+    if (done) return;
+    done = true;
+    frame.remove();
+  };
+  const timer = globalThis.setTimeout?.(cleanup, 10000);
+  frame.addEventListener('load', () => {
+    const win = frame.contentWindow;
+    if (!win?.print) { cleanup(); return; }
+    if (timer && globalThis.clearTimeout) globalThis.clearTimeout(timer);
+    win.addEventListener?.('afterprint', cleanup, { once: true });
+    try { win.focus?.(); win.print(); }
+    catch (error) { cleanup(); throw error; }
+  }, { once: true });
+  doc.body.append(frame);
+}
+
 /** Native transcript elements that can be turned into note blocks.
  * Kept deliberately broad: settled/older sessions contain more tool cards,
  * plain user prose, submitted images and collapsed content than fresh ones. */
@@ -903,7 +986,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          const nextStatus = `v0.1.19 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          const nextStatus = `v0.1.20 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           if (nextStatus !== lastStatus) { status.textContent = nextStatus; lastStatus = nextStatus; }
           const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
           const nextDebug = `debug · scope=${scopeLabel} candidates=${candidateCount} clicks=${clickCount}`
@@ -1429,12 +1512,15 @@ export function activate(ctx) {
             dialogError.hidden = true;
             button(actions, 'Print / Save PDF', async () => {
               try {
-                if (typeof globalThis.print !== 'function') throw new Error('Printing is unavailable in this host. Use Copy Markdown instead.');
                 logEvent('note-action', { action: 'export-pdf', noteId: noteRecord.id });
-                try { await globalThis.document?.fonts?.ready; } catch { /* printing still works without fonts */ }
-                globalThis.print();
+                try { await globalThis.document?.fonts?.ready; } catch { /* fonts are optional */ }
+                printRenderedNote(preview, noteRecord.title || 'Untitled note');
                 dialogError.hidden = true;
-              } catch (cause) { dialogError.hidden = false; dialogError.textContent = message(cause); }
+              } catch (cause) {
+                logEvent('note-action', { action: 'export-pdf-error', noteId: noteRecord.id, message: message(cause) }, 'error');
+                dialogError.hidden = false;
+                dialogError.textContent = message(cause);
+              }
             }, dialogSignal, { icon: printIcon, variant: 'default' });
             button(actions, 'Copy Markdown', async () => {
               try {

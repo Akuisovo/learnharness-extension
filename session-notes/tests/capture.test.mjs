@@ -4,7 +4,7 @@ import {
   splitMarkdown, collectSources, sourceStrings, blocksFromView,
   tableToMarkdown, fenceSources, captureFromElement, readSelection, topLevelCaptures, previewBlock,
   diagramSources, findRegions, regionToBlock, rectsOverlap, REGION_SELECTOR,
-  regionAtPointFromRects, noteToMarkdown,
+  regionAtPointFromRects, noteToMarkdown, printableDocumentHtml,
 } from '../src/main.js';
 
 test('splitMarkdown finds pipe tables with and without outer pipes', () => {
@@ -132,6 +132,16 @@ test('noteToMarkdown expands placed blocks at their note-text positions', () => 
   assert.ok(!markdown.includes('[[block:'));
   assert.equal(markdown.split('graph LR; A-->B').length - 1, 1);
   assert.match(markdown, /## Captured blocks[\s\S]*unused block/);
+});
+
+test('printableDocumentHtml builds a standalone print document with the rendered note', () => {
+  const html = printableDocumentHtml('<h1>Title</h1><svg></svg>', 'A < B & C', '.lh-prose { color: red; }');
+  assert.match(html, /^<!doctype html>/);
+  assert.match(html, /<title>A &lt; B &amp; C<\/title>/);
+  assert.match(html, /\.lh-prose \{ color: red; \}/);
+  assert.match(html, /<main class="sn-print-root"><h1>Title<\/h1><svg><\/svg><\/main>/);
+  assert.match(html, /@page \{ margin: 14mm; \}/);
+  assert.match(html, /body \* \{ visibility: visible !important; \}/);
 });
 
 test('captureFromElement prefers the original diagram source and skips nested matches', () => {
