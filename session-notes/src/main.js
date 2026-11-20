@@ -317,7 +317,35 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 }[char]));
 
-const PDF_PRINT_CSS = `
+/** Normalise PDF export layout options to safe, printable values. */
+export function normalisePdfOptions(input = {}) {
+  const marginMm = [8, 14, 20].includes(Number(input.marginMm)) ? Number(input.marginMm) : 14;
+  const orientation = input.orientation === 'landscape' ? 'landscape' : 'portrait';
+  const scale = [80, 90, 100, 110, 125].includes(Number(input.scale)) ? Number(input.scale) : 100;
+  const maxElementHeight = [0, 110, 160, 220, 300].includes(Number(input.maxElementHeight))
+    ? Number(input.maxElementHeight) : 160;
+  const keepTogether = input.keepTogether === true;
+  return { marginMm, orientation, scale, maxElementHeight, keepTogether };
+}
+
+function pdfLayoutCss(options = {}, important = false) {
+  const { marginMm, orientation, scale, maxElementHeight, keepTogether } = normalisePdfOptions(options);
+  const bang = important ? ' !important' : '';
+  const breakValue = keepTogether ? 'avoid' : 'auto';
+  const sizeRule = important
+    ? `.sn-print-root img, .sn-print-root svg, .sn-print-root canvas { max-width: 100%${bang}; height: auto${bang};${maxElementHeight ? ` max-height: ${maxElementHeight}mm${bang};` : ''} }`
+    : `.sn-print-root img, .sn-print-root svg, .sn-print-root canvas { max-width: 100%; height: auto;${maxElementHeight ? ` max-height: ${maxElementHeight}mm;` : ''} }`;
+  return [
+    `@page { margin: ${marginMm}mm; size: A4 ${orientation}; }`,
+    `.sn-print-root { font-size: ${scale}%${bang}; }`,
+    `.sn-print-root table { max-width: 100%${bang}; }`,
+    sizeRule,
+    `.sn-print-root h1, .sn-print-root h2, .sn-print-root h3, .sn-print-root h4, .sn-print-root pre, .sn-print-root table, .sn-print-root svg, .sn-print-root img, .sn-print-root .sn-capture-block { break-inside: ${breakValue}${bang}; page-break-inside: ${breakValue}${bang}; }`,
+  ].join('\n');
+}
+
+function buildPrintCss(options = {}) {
+  return `
 @page { margin: 14mm; }
 html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; color: #000 !important; }
 body * { visibility: visible !important; }
@@ -340,22 +368,32 @@ body * { visibility: visible !important; }
 }
 .sn-print-root .sn-markdown { overflow: visible !important; }
 .sn-print-root pre, .sn-print-root code { white-space: pre-wrap !important; overflow-wrap: anywhere !important; }
-.sn-print-root h1, .sn-print-root h2, .sn-print-root h3, .sn-print-root h4,
-.sn-print-root pre, .sn-print-root table, .sn-print-root svg, .sn-print-root img {
-  break-inside: avoid !important;
-  page-break-inside: avoid !important;
-}
 .sn-print-root a { color: #000 !important; text-decoration: none !important; }
+${pdfLayoutCss(options, true)}
 `;
+}
 
 /** Self-contained document used by the hidden print iframe. Host styles are
  * copied in so host-rendered Mermaid/table/code markup keeps its appearance. */
-export function printableDocumentHtml(bodyHtml, title, styles = '') {
+export function printableDocumentHtml(bodyHtml, title, styles = '', options = {}) {
   const base = globalThis.location?.href ? `<base href="${escapeHtml(globalThis.location.href)}">` : '';
   const safeStyles = String(styles || '').replace(/<\/style/gi, '<\\/style');
   return `<!doctype html><html><head><meta charset="utf-8">${base}<title>${escapeHtml(title)}</title>`
-    + `<style>${safeStyles}</style><style>${PDF_PRINT_CSS}</style></head>`
+    + `<style>${safeStyles}</style><style>${buildPrintCss(options)}</style></head>`
     + `<body><main class="sn-print-root">${bodyHtml}</main></body></html>`;
+}
+
+function applyPreviewPdfOptions(preview, options = {}) {
+  const opts = normalisePdfOptions(options);
+  let style = preview.querySelector('[data-sn-pdf-preview-style]');
+  if (!style) {
+    style = globalThis.document.createElement('style');
+    style.setAttribute('data-sn-pdf-preview-style', '');
+    preview.prepend(style);
+  }
+  style.textContent = pdfLayoutCss(opts, false);
+  preview.style.boxSizing = 'border-box';
+  preview.style.padding = `${opts.marginMm}mm`;
 }
 
 function collectStyles() {
@@ -370,14 +408,14 @@ function collectStyles() {
 
 /** Print a detached copy of rendered note HTML. Printing the host dialog directly
  * produced blank pages because the modal scroll frame clips its overflow. */
-function printRenderedNote(fragment, title) {
+function printRenderedNote(fragment, title, options = {}) {
   const doc = globalThis.document;
   if (!doc?.body || typeof doc.createElement !== 'function') throw new Error('Printing is unavailable in this host.');
   const frame = doc.createElement('iframe');
   frame.setAttribute('aria-hidden', 'true');
   frame.setAttribute('title', 'Session Notes PDF print frame');
   frame.style.cssText = 'position:fixed;left:-10000px;top:0;width:1200px;height:1600px;border:0;pointer-events:none;';
-  frame.srcdoc = printableDocumentHtml(fragment.innerHTML, title, collectStyles());
+  frame.srcdoc = printableDocumentHtml(fragment.innerHTML, title, collectStyles(), options);
   let done = false;
   const cleanup = () => {
     if (done) return;
@@ -986,7 +1024,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          const nextStatus = `v0.1.21 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          const nextStatus = `v0.1.22 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           if (nextStatus !== lastStatus) { status.textContent = nextStatus; lastStatus = nextStatus; }
           const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
           const nextDebug = `debug · scope=${scopeLabel} candidates=${candidateCount} clicks=${clickCount}`
@@ -1505,16 +1543,18 @@ export function activate(ctx) {
             const pane = el('div', 'sn-settings');
             host.append(pane);
             pane.append(el('h3', 'sn-title', 'Export note'));
-            pane.append(el('p', 'sn-hint', 'PDF export uses the rendered preview below. Choose “Print / Save PDF” and select “Save as PDF”; diagrams, tables and text keep the order shown here.'));
+            pane.append(el('p', 'sn-hint', 'Adjust the PDF layout, review the preview, then choose “Print / Save PDF” and select “Save as PDF”. Diagrams, tables and text follow the note order.'));
+
+            const pdfOptions = normalisePdfOptions({});
             const actions = el('div', 'sn-toolbar');
             pane.append(actions);
             const dialogError = el('span', 'sn-error');
             dialogError.hidden = true;
             button(actions, 'Print / Save PDF', async () => {
               try {
-                logEvent('note-action', { action: 'export-pdf', noteId: noteRecord.id });
+                logEvent('note-action', { action: 'export-pdf', noteId: noteRecord.id, options: { ...pdfOptions } });
                 try { await globalThis.document?.fonts?.ready; } catch { /* fonts are optional */ }
-                printRenderedNote(preview, noteRecord.title || 'Untitled note');
+                printRenderedNote(preview, noteRecord.title || 'Untitled note', pdfOptions);
                 dialogError.hidden = true;
               } catch (cause) {
                 logEvent('note-action', { action: 'export-pdf-error', noteId: noteRecord.id, message: message(cause) }, 'error');
@@ -1532,10 +1572,39 @@ export function activate(ctx) {
             button(actions, 'Close', () => dialog.dispose(), dialogSignal);
             pane.append(dialogError);
 
+            pane.append(el('h4', 'sn-label', 'PDF layout'));
+            const layout = el('div', 'sn-pdf-options');
+            pane.append(layout);
+            const addSelect = (labelText, values, key) => {
+              const field = el('label', 'sn-field sn-pdf-field');
+              field.append(el('span', 'sn-label', labelText));
+              const select = el('select', 'sn-select');
+              for (const [text, value] of values) {
+                const option = el('option', undefined, text);
+                option.value = String(value);
+                if (String(pdfOptions[key]) === String(value)) option.selected = true;
+                select.append(option);
+              }
+              select.addEventListener('change', () => {
+                const raw = select.value;
+                pdfOptions[key] = raw === 'true' ? true : raw === 'false' ? false : /^\d+$/.test(raw) ? Number(raw) : raw;
+                Object.assign(pdfOptions, normalisePdfOptions(pdfOptions));
+                applyPreviewPdfOptions(preview, pdfOptions);
+              }, { signal: dialogSignal });
+              field.append(select);
+              layout.append(field);
+            };
+            addSelect('Margin', [['Compact (8mm)', 8], ['Normal (14mm)', 14], ['Wide (20mm)', 20]], 'marginMm');
+            addSelect('Orientation', [['Portrait', 'portrait'], ['Landscape', 'landscape']], 'orientation');
+            addSelect('Scale', [['80%', 80], ['90%', 90], ['100%', 100], ['110%', 110], ['125%', 125]], 'scale');
+            addSelect('Max diagram / image height', [['No limit', 0], ['Small (110mm)', 110], ['Medium (160mm)', 160], ['Large (220mm)', 220], ['Extra large (300mm)', 300]], 'maxElementHeight');
+            addSelect('Keep elements together', [['No (allow page breaks)', false], ['Yes (avoid splitting)', true]], 'keepTogether');
+
             pane.append(el('h4', 'sn-label', 'PDF preview'));
             const preview = el('div', 'sn-print-root');
             pane.append(preview);
             renderMarkdown(preview, markdown, dialogSignal);
+            applyPreviewPdfOptions(preview, pdfOptions);
 
             pane.append(el('h4', 'sn-label', 'Markdown source'));
             const area = el('textarea', 'sn-textarea sn-export-text', markdown);

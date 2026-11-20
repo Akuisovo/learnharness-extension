@@ -4,7 +4,7 @@ import {
   splitMarkdown, collectSources, sourceStrings, blocksFromView,
   tableToMarkdown, fenceSources, captureFromElement, readSelection, topLevelCaptures, previewBlock,
   diagramSources, findRegions, regionToBlock, rectsOverlap, REGION_SELECTOR,
-  regionAtPointFromRects, noteToMarkdown, printableDocumentHtml,
+  regionAtPointFromRects, noteToMarkdown, printableDocumentHtml, normalisePdfOptions,
 } from '../src/main.js';
 
 test('splitMarkdown finds pipe tables with and without outer pipes', () => {
@@ -142,6 +142,28 @@ test('printableDocumentHtml builds a standalone print document with the rendered
   assert.match(html, /<main class="sn-print-root"><h1>Title<\/h1><svg><\/svg><\/main>/);
   assert.match(html, /@page \{ margin: 14mm; \}/);
   assert.match(html, /body \* \{ visibility: visible !important; \}/);
+});
+
+test('normalisePdfOptions clamps to supported PDF layout values', () => {
+  assert.deepEqual(normalisePdfOptions(), {
+    marginMm: 14, orientation: 'portrait', scale: 100, maxElementHeight: 160, keepTogether: false,
+  });
+  assert.deepEqual(normalisePdfOptions({ marginMm: 8, orientation: 'landscape', scale: 80, maxElementHeight: 0, keepTogether: true }), {
+    marginMm: 8, orientation: 'landscape', scale: 80, maxElementHeight: 0, keepTogether: true,
+  });
+  assert.equal(normalisePdfOptions({ marginMm: 99, scale: 73, maxElementHeight: 42 }).marginMm, 14);
+  assert.equal(normalisePdfOptions({ marginMm: 99, scale: 73, maxElementHeight: 42 }).scale, 100);
+  assert.equal(normalisePdfOptions({ marginMm: 99, scale: 73, maxElementHeight: 42 }).maxElementHeight, 160);
+});
+
+test('printableDocumentHtml applies PDF layout options', () => {
+  const html = printableDocumentHtml('<p>Body</p>', 'Note', '', {
+    marginMm: 8, orientation: 'landscape', scale: 90, maxElementHeight: 160, keepTogether: false,
+  });
+  assert.match(html, /@page \{ margin: 8mm; size: A4 landscape; \}/);
+  assert.match(html, /\.sn-print-root \{ font-size: 90% !important; \}/);
+  assert.match(html, /max-height: 160mm !important;/);
+  assert.match(html, /break-inside: auto !important;/);
 });
 
 test('captureFromElement prefers the original diagram source and skips nested matches', () => {

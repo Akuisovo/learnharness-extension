@@ -129,6 +129,15 @@
 .sn-textarea { min-height: 6rem; resize: vertical; }
 .sn-export-text { min-height: 14rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; }
 
+.sn-pdf-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.5rem 0.75rem;
+  align-items: end;
+}
+
+.sn-pdf-field { gap: 0.2rem; }
+
 .sn-print-root {
   max-height: 60vh;
   overflow: auto;
