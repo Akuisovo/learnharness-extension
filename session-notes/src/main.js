@@ -297,38 +297,30 @@ function cleanNodeText(node) {
   return raw.replace(/\u00A0/g, ' ').trim();
 }
 
-/** Find the smallest transcript region at a point from the browser's hit-test
- * stack. Querying every descendant of a whole-session wrapper is too expensive
- * in settled sessions with thousands of nodes. */
-function regionAtPoint(point) {
-  if (!point || typeof document === 'undefined' || typeof document.elementsFromPoint !== 'function') return null;
-  let best = null, bestPriority = -1, bestArea = Infinity, wrapper = null;
-  for (const node of document.elementsFromPoint(point.clientX, point.clientY)) {
-    let probe = node;
-    while (probe && probe !== document.body) {
-      if (probe.matches?.(REGION_SELECTOR) && !probe.closest?.('[data-plugin-session-surface]')) {
-        const rect = probe.getBoundingClientRect?.();
-        const area = rect ? rect.width * rect.height : Infinity;
-        if (probe.matches?.(WRAPPER_SELECTOR)) {
-          if (!wrapper) wrapper = probe;
-        } else {
-          const priority = regionPriority(probe);
-          if (priority > bestPriority || (priority === bestPriority && area < bestArea)) {
-            bestPriority = priority;
-            bestArea = area;
-            best = probe;
-          }
-        }
-      }
-      probe = probe.parentElement;
+/** Pick the smallest cached region rect containing a point. The host marks the
+ * transcript `inert` while the picker is open, so elementsFromPoint cannot see
+ * it; cached geometry works regardless of host interaction state. */
+export function regionAtPointFromRects(point, entries) {
+  if (!point || !entries) return null;
+  let best = null, bestPriority = -1, bestArea = Infinity;
+  for (const { node, rect } of entries) {
+    if (!rect || point.clientX < rect.left || point.clientX > rect.right
+        || point.clientY < rect.top || point.clientY > rect.bottom) continue;
+    const priority = regionPriority(node);
+    const area = Math.max(1, rect.width ?? rect.right - rect.left)
+      * Math.max(1, rect.height ?? rect.bottom - rect.top);
+    if (priority > bestPriority || (priority === bestPriority && area < bestArea)) {
+      bestPriority = priority;
+      bestArea = area;
+      best = node;
     }
   }
-  return best || wrapper;
+  return best;
 }
 
 /** Prefer an individual content block over a whole-session wrapper. */
-function preferRegionNode(target, point) {
-  const atPoint = regionAtPoint(point);
+function preferRegionNode(target, point, entries = []) {
+  const atPoint = regionAtPointFromRects(point, entries);
   if (atPoint) return atPoint;
   let node = target;
   while (node && node !== document.body) {
@@ -821,8 +813,9 @@ export function activate(ctx) {
 
         let regions = [], visibleRegions = [], boxes = new Map(), regionByNode = new Map();
         let selected = new Set(), layoutQueued = false, dragMoved = false;
-        let currentRoots = [], start = null, canvasBase = null, lastDragRect = null, suppressBoxClick = false;
-        let rawHits = 0, clickCount = 0, scopeLabel = '?', detectError = '', notice = '';
+        let currentRoots = [], candidateNodes = [], nodeRects = new Map(), visibleNodes = new Set();
+        let observer = null, start = null, canvasBase = null, lastDragRect = null, suppressBoxClick = false;
+        let candidateCount = 0, clickCount = 0, scopeLabel = '?', detectError = '', notice = '';
 
         const setSelected = (region, on) => {
           if (on) selected.add(region);
@@ -830,9 +823,9 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          status.textContent = `v0.1.15 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          status.textContent = `v0.1.16 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
-          debug.textContent = `debug · scope=${scopeLabel} found=${rawHits} clicks=${clickCount}`
+          debug.textContent = `debug · scope=${scopeLabel} candidates=${candidateCount} clicks=${clickCount}`
             + (detectError ? ` · error: ${detectError}` : '')
             + (notice ? ` · ${notice}` : '')
             + logHint;
@@ -841,7 +834,7 @@ export function activate(ctx) {
         const scroller = document.querySelector('[role="log"] > div[style*="scrollbar-gutter"]')
           || document.querySelector('[role="log"] > div');
         signal.addEventListener('abort', () => {
-          delete document.documentElement.dataset.snHitTest;
+          observer?.disconnect();
           delete document.documentElement.dataset.snPick;
         }, { once: true });
         const trackRegion = region => {
@@ -891,35 +884,11 @@ export function activate(ctx) {
           }
           updateStatus();
         };
-        /** Find real transcript elements under the overlay by temporarily making
-         * the surface transparent to hit-testing. Only visible content is probed,
-         * so a long session never needs a full transcript scan. */
-        const hitTestRegions = roots => {
-          const frame = canvas.closest('[data-plugin-session-surface-frame]');
-          const base = canvas.getBoundingClientRect();
-          const oldFrame = frame?.style.pointerEvents;
-          const oldCanvas = canvas.style.pointerEvents;
-          const found = new Set();
-          try {
-            if (frame) frame.style.pointerEvents = 'none';
-            canvas.style.pointerEvents = 'none';
-            document.documentElement.dataset.snHitTest = '1';
-            for (let y = base.top + 4; y < base.bottom - 4; y += 28) {
-              for (let x = base.left + 4; x < base.right - 4; x += 56) {
-                const matched = regionAtPoint({ clientX: x, clientY: y });
-                if (matched && roots.some(root => root === matched || root.contains(matched))) found.add(matched);
-              }
-            }
-          } catch (error) {
-            detectError = String(error?.message || error);
-          } finally {
-            if (frame) frame.style.pointerEvents = oldFrame;
-            canvas.style.pointerEvents = oldCanvas;
-            delete document.documentElement.dataset.snHitTest;
-          }
-          return [...found];
+        const queueLayout = () => {
+          if (layoutQueued || signal.aborted) return;
+          layoutQueued = true;
+          globalThis.requestAnimationFrame?.(layout);
         };
-
         const addBox = region => {
           if (boxes.has(region)) return;
           const box = el('button', `sn-region-box sn-region-${region.type}`);
@@ -942,26 +911,51 @@ export function activate(ctx) {
         };
 
         let lastVisibleSignature = '';
-        // Re-probe only the canvas on scroll. Discovered regions stay in the
-        // cache so selections survive moving away from them.
-        const refreshVisible = () => {
-          if (signal.aborted || !currentRoots.length) return;
-          const hits = hitTestRegions(currentRoots);
-          visibleRegions = findRegions(hits).map(trackRegion);
+        // The host marks the transcript inert while the picker is open, so
+        // elementsFromPoint cannot find content after the surface registers.
+        // Geometry from IntersectionObserver is unaffected by inert and needs
+        // no work on scroll. Regions stay cached so selections survive scrolling.
+        const applyVisibleNodes = () => {
+          if (signal.aborted) return;
+          const added = [];
+          const keep = new Set();
+          for (const node of [...visibleNodes]) {
+            if (!node.isConnected) { visibleNodes.delete(node); nodeRects.delete(node); continue; }
+            const region = regionByNode.get(node);
+            if (region) keep.add(region);
+            else added.push(node);
+          }
+          if (added.length) for (const region of findRegions(added).map(trackRegion)) keep.add(region);
+          visibleRegions = [...keep];
           layout();
-          const signature = `${hits.length}:${visibleRegions.length}:${regions.length}`;
+          const signature = `${visibleNodes.size}:${visibleRegions.length}:${regions.length}`;
           if (signature !== lastVisibleSignature) {
             lastVisibleSignature = signature;
             logEvent('visible-refresh', {
-              hits: hits.length, regions: regions.length, boxes: boxes.size,
-              scrollTop: scroller?.scrollTop ?? null,
+              candidates: candidateCount, visible: visibleNodes.size, added: added.length,
+              regions: regions.length, boxes: boxes.size, scrollTop: scroller?.scrollTop ?? null,
             });
           }
         };
-        const queueVisibleRefresh = () => {
-          if (layoutQueued || signal.aborted) return;
-          layoutQueued = true;
-          globalThis.requestAnimationFrame?.(refreshVisible);
+        const observeCandidates = () => {
+          observer?.disconnect();
+          observer = null;
+          if (typeof IntersectionObserver === 'undefined') return;
+          observer = new IntersectionObserver(entries => {
+            if (signal.aborted) return;
+            for (const entry of entries) {
+              const node = entry.target;
+              if (entry.isIntersecting && node.isConnected) {
+                if (entry.boundingClientRect) nodeRects.set(node, entry.boundingClientRect);
+                visibleNodes.add(node);
+              } else {
+                visibleNodes.delete(node);
+                nodeRects.delete(node);
+              }
+            }
+            applyVisibleNodes();
+          }, { root: null, rootMargin: '160px', threshold: 0 });
+          for (const node of candidateNodes) observer.observe(node);
         };
 
         const detect = () => {
@@ -969,11 +963,15 @@ export function activate(ctx) {
           selected = new Set();
           clickCount = 0;
           detectError = '';
+          observer?.disconnect();
+          observer = null;
           for (const box of boxes.values()) box.remove();
           boxes = new Map();
           regions = [];
           visibleRegions = [];
           regionByNode = new Map();
+          nodeRects = new Map();
+          visibleNodes = new Set();
           currentRoots = [];
           lastVisibleSignature = '';
           // The main transcript is usually [role="log"] with one or more
@@ -992,25 +990,30 @@ export function activate(ctx) {
             ? `${log ? 'log' : 'doc'}/roots×${roots.length}`
             : 'no-transcript';
           currentRoots = roots;
-          let hits = [];
-          try {
-            hits = hitTestRegions(roots);
-          } catch (error) {
-            detectError = String(error?.message || error);
-            logEvent('hit-test-error', { message: detectError }, 'error');
+          candidateNodes = [...new Set(roots.flatMap(root => [...root.querySelectorAll(REGION_SELECTOR)]))]
+            .filter(node => !node.closest?.('[data-plugin-session-surface]'));
+          candidateCount = candidateNodes.length;
+          // One cheap geometry pass finds the starting viewport. Text/style work
+          // happens only for those few nodes, never for the whole session.
+          const base = canvas.getBoundingClientRect();
+          for (const node of candidateNodes) {
+            const rect = node.getBoundingClientRect?.();
+            if (!rect || rect.width < 2 || rect.height < 2) continue;
+            if (rect.bottom < base.top - 160 || rect.top > base.bottom + 160) continue;
+            nodeRects.set(node, rect);
+            visibleNodes.add(node);
           }
-          rawHits = hits.length;
-          visibleRegions = findRegions(hits).map(trackRegion);
-          layout();
+          applyVisibleNodes();
           logEvent('detect', {
             sessionId: session.sessionId, scope: scopeLabel, roots: roots.length,
-            hits: hits.length, rawHits, regions: regions.length, boxes: boxes.size,
+            candidates: candidateCount, regions: regions.length, boxes: boxes.size,
             sample: visibleRegions.slice(0, 8).map(r => ({ type: r.type, label: r.label, tag: r.node?.tagName?.toLowerCase?.() || '', text: cleanNodeText(r.node).slice(0, 80) })),
           });
-          // The frame can still be sizing when content mounts. Re-probe once the
-          // layout settles instead of waiting for another full-session scan.
-          globalThis.requestAnimationFrame?.(queueVisibleRefresh);
-          globalThis.setTimeout?.(() => { if (!signal.aborted) { refreshVisible(); if (!regions.length) detect(); } }, 350);
+          observeCandidates();
+          // The frame can still be sizing when content mounts. Re-layout once it
+          // settles; IntersectionObserver handles later visibility changes.
+          globalThis.requestAnimationFrame?.(queueLayout);
+          globalThis.setTimeout?.(() => { if (!signal.aborted) { layout(); if (!candidateNodes.length) detect(); } }, 350);
         };
 
         const addHandle = widget(ctx.ui.mountButton(addSlot, {
@@ -1124,10 +1127,10 @@ export function activate(ctx) {
           if (!scroller) return;
           event.preventDefault();
           scroller.scrollTop += event.deltaY;
-          queueVisibleRefresh();
+          queueLayout();
         }, { signal, passive: false });
-        globalThis.addEventListener?.('resize', queueVisibleRefresh, { signal });
-        document.addEventListener('scroll', queueVisibleRefresh, { capture: true, signal });
+        globalThis.addEventListener?.('resize', queueLayout, { signal });
+        document.addEventListener('scroll', queueLayout, { capture: true, signal });
 
         refresh.addEventListener('click', () => { logEvent('refresh-click', {}); detect(); }, { signal });
         selectAll.addEventListener('click', () => {
@@ -1165,19 +1168,11 @@ export function activate(ctx) {
             return;
           }
           const clicked = event.target;
-          let node = clicked;
-          while (node && node !== document.body && !node.matches?.(REGION_SELECTOR)) node = node.parentElement;
-          if (!node || node === document.body || node.matches?.(WRAPPER_SELECTOR)
-              || node.closest?.('[data-plugin-session-surface]')) {
-            // Avoid whole-session wrappers: choose the smallest block under the click.
-            node = preferRegionNode(clicked, event);
-          }
+          const pickEntries = [...nodeRects].map(([node, rect]) => ({ node, rect }));
+          // Cached geometry works even though the host marks the transcript inert.
+          let node = preferRegionNode(clicked, event, pickEntries);
           let region = node && node !== document.body && !node.closest?.('[data-plugin-session-surface]')
             ? findRegions([node])[0] : null;
-          if (!region) {
-            node = preferRegionNode(clicked, event);
-            region = node ? findRegions([node])[0] : null;
-          }
           if (region) {
             const tracked = trackRegion(region);
             if (!visibleRegions.includes(tracked)) visibleRegions.push(tracked);

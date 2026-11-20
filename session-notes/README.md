@@ -15,9 +15,9 @@ by session or by knowledge-web topic/node, and supports full-text search.
   - tables, Mermaid diagrams, code blocks, images and prose paragraphs in the
     visible canvas are detected automatically and outlined as labelled regions;
   - **click** a region to select it, or **drag** across the transcript to select
-    every visible region the rectangle touches; scroll to probe more of the
-    transcript. Selected regions stay selected after they scroll out of view;
-    use **Select all**, **Clear** and **Refresh**, or the wheel to scroll;
+    every visible region the rectangle touches; scroll to bring more of the
+    transcript into view. Selected regions stay selected after they scroll out
+    of view; use **Select all**, **Clear** and **Refresh**, or the wheel to scroll;
   - **Pick element** is a manual fallback: click it, then click any element in
     the transcript to add it to the selection (press **Escape** to cancel). Use
     this if automatic detection misses something.
@@ -28,13 +28,16 @@ by session or by knowledge-web topic/node, and supports full-text search.
   This avoids re-rendering the session, so it stays responsive on long sessions.
   It does use the host transcript's DOM structure, which may change in a future
   LearnHarness update. The status line shows the detected/selected counts and a
-  `debug` line (scope, nodes found, clicks received) to help diagnose any change.
-  Detection hit-tests the visible transcript in every transcript root (including
-  question docks) instead of scanning the whole session on open. That keeps long,
-  settled sessions responsive. Collapsed or off-screen content must be expanded
-  or scrolled into view before it can be outlined. Scrolling refreshes the visible
-  regions while keeping earlier selections. Whole-session wrapper elements are
-  skipped so a session is no longer detected as one unpickable block.
+  `debug` line (scope, candidates, clicks received) to help diagnose any change.
+  Detection collects transcript candidates once, then uses cached geometry and
+  `IntersectionObserver` to outline only what enters the visible canvas. It does
+  not hit-test the transcript, which the host marks `inert` while the picker is
+  open, and it does not run a text/style scan over the whole session. That keeps
+  long, settled sessions responsive and stops boxes from vanishing after the
+  surface registers. Collapsed or off-screen content must be expanded or
+  scrolled into view before it can be outlined. Selected regions stay cached
+  while scrolling. Whole-session wrapper elements are skipped so a session is
+  no longer detected as one unpickable block.
 
   **Debug log.** Every action and error is appended to
   `session-notes-debug.log` in the plugin's data directory (next to `notes.json`,

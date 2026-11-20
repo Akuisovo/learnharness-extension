@@ -4,6 +4,7 @@ import {
   splitMarkdown, collectSources, sourceStrings, blocksFromView,
   tableToMarkdown, fenceSources, captureFromElement, readSelection, topLevelCaptures, previewBlock,
   diagramSources, findRegions, regionToBlock, rectsOverlap, REGION_SELECTOR,
+  regionAtPointFromRects,
 } from '../src/main.js';
 
 test('splitMarkdown finds pipe tables with and without outer pipes', () => {
@@ -270,4 +271,20 @@ test('rectsOverlap detects drag selection intersections', () => {
 test('readSelection reads from shadow DOM scopes as well as the document', () => {
   const fakeRoot = { getRootNode: () => ({ getSelection: () => ({ toString: () => '  selected words  ' }) }) };
   assert.equal(readSelection(null, fakeRoot), 'selected words');
+});
+
+test('regionAtPointFromRects picks the smallest cached region containing a click', () => {
+  const rect = (left, top, right, bottom) => ({ left, top, right, bottom, width: right - left, height: bottom - top });
+  const matches = names => selector => names.some(name => selector.split(',').map(part => part.trim()).includes(name));
+  const wrapper = { matches: () => false };
+  const paragraph = { matches: matches(['p']) };
+  const table = { matches: matches(['table']) };
+  const entries = [
+    { node: wrapper, rect: rect(0, 0, 500, 500) },
+    { node: paragraph, rect: rect(10, 10, 200, 40) },
+    { node: table, rect: rect(10, 50, 200, 90) },
+  ];
+  assert.equal(regionAtPointFromRects({ clientX: 100, clientY: 20 }, entries), paragraph);
+  assert.equal(regionAtPointFromRects({ clientX: 100, clientY: 70 }, entries), table);
+  assert.equal(regionAtPointFromRects({ clientX: 600, clientY: 20 }, entries), null);
 });

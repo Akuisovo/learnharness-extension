@@ -313,7 +313,6 @@
   outline-offset: 1px;
 }
 
-html[data-sn-hit-test] .sn-region-box,
 html[data-sn-pick] .sn-region-box { pointer-events: none; }
 .sn-region-box:hover { background: rgba(90, 160, 255, 0.2); }
 .sn-region-box.is-selected {
