@@ -285,6 +285,49 @@ const HIGH_PRIORITY = [
   '[data-testid="md-math"]', 'pre',
 ].join(', ');
 const MEDIUM_PRIORITY = 'p, li, h1, h2, h3, h4, h5, h6, [data-streamdown^="heading-"], [data-streamdown="list-item"], [data-streamdown="blockquote"]';
+const WRAPPER_SELECTOR = '[data-source-message-id], [role="log"], [data-session-find-root], [data-session-body], [data-testid="tool-call-card"], [data-testid="user-message"]';
+
+/** Extract readable text. innerText splits stacked MathML glyphs onto separate
+ * lines ("𝑧\nˉ\n=…"); in that case textContent is the faithful source. */
+function cleanNodeText(node) {
+  const raw = String(node?.innerText ?? node?.textContent ?? '');
+  const lines = raw.split(/\r?\n/).map(line => line.trim());
+  const glyphLines = lines.filter(line => line.length > 0 && line.length <= 2).length;
+  if (glyphLines >= 3) return String(node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  return raw.replace(/\u00A0/g, ' ').trim();
+}
+
+/** Prefer an individual content block over a whole-session wrapper. */
+function preferRegionNode(target, point) {
+  const hit = node => {
+    const rect = node.getBoundingClientRect?.();
+    return rect && (!point || (point.clientX >= rect.left && point.clientX <= rect.right
+      && point.clientY >= rect.top && point.clientY <= rect.bottom));
+  };
+  const candidates = [...(target?.querySelectorAll?.(MEDIUM_PRIORITY + ', ' + HIGH_PRIORITY) ?? [])]
+    .filter(node => hit(node) && !node.closest?.('[data-plugin-session-surface]'))
+    .filter(node => {
+      const text = cleanNodeText(node);
+      return text.length >= 3 && text.length <= 600;
+    });
+  if (candidates.length) {
+    candidates.sort((a, b) => {
+      const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      return (ra.width * ra.height) - (rb.width * rb.height);
+    });
+    return candidates[0];
+  }
+  let node = target;
+  while (node && node !== document.body) {
+    const text = cleanNodeText(node);
+    const rect = node.getBoundingClientRect?.();
+    if (text.length >= 3 && text.length <= 600 && rect && rect.width < 1000 && rect.height < 500
+        && !node.matches?.(WRAPPER_SELECTOR)
+        && !node.closest?.('[data-plugin-session-surface]')) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
 
 /** Higher priority wins when boxes overlap, so a table is not hidden by its wrapper. */
 function regionPriority(node) {
@@ -320,8 +363,13 @@ export function findRegions(...scopes) {
     .filter(regionVisible)
     .filter(node => {
       if (node.matches?.(HIGH_PRIORITY)) return true;
-      // Drop giant wrappers that span multiple transcript units; they make the
-      // whole session appear as one unpickable block.
+      // Never select whole-session wrappers or tool/message cards as one block.
+      if (node.matches?.(WRAPPER_SELECTOR)) return false;
+      const text = cleanNodeText(node);
+      if (text.length > 800) return false;
+      const rect = node.getBoundingClientRect?.();
+      const viewport = (globalThis.innerWidth || 1200) * (globalThis.innerHeight || 800);
+      if (rect && rect.width * rect.height > viewport * 0.3) return false;
       const count = node.querySelectorAll?.('[data-source-message-id], [data-testid="user-message"], [data-testid="md-mermaid"], [data-streamdown="mermaid"], table, [data-streamdown="code-block"], [data-testid="tool-call-card"]').length || 0;
       return count < 3;
     });
@@ -335,8 +383,16 @@ export function findRegions(...scopes) {
       // A structured child (table/diagram/code) should replace its text wrapper.
       || (priority < 3 && other.priority === 3 && node.contains?.(other.node))
     )));
+  const seenText = new Set();
+  const deduped = kept.filter(({ node, type }) => {
+    if (type !== 'text') return true;
+    const key = cleanNodeText(node).slice(0, 200);
+    if (key && seenText.has(key)) return false;
+    if (key) seenText.add(key);
+    return true;
+  });
   let diagramIndex = -1;
-  return kept.map(({ node, type }) => {
+  return deduped.map(({ node, type }) => {
     const isMermaid = node.matches?.(regionMatches.mermaid);
     const isImage = node.matches?.(regionMatches.image);
     return {
@@ -345,7 +401,7 @@ export function findRegions(...scopes) {
       label: isImage ? 'Image' : type === 'table' ? 'Table' : type === 'diagram' ? 'Diagram' : type === 'code' ? 'Code' : 'Text',
       diagramIndex: isMermaid ? ++diagramIndex : -1,
     };
-  }).slice(0, 300);
+  }).slice(0, 150);
 }
 
 /** Turn a selected DOM region into a note block. Diagrams keep their Mermaid source. */
@@ -379,7 +435,7 @@ export function regionToBlock(region, mermaidSources = []) {
     const code = node.querySelector?.('code')?.textContent || node.textContent || '';
     return { type: 'code', markdown: `\`\`\`${language}\n${String(code).trim()}\n\`\`\``, caption: 'Code' };
   }
-  const markdown = String(node.innerText || node.textContent || '').replace(/\u00A0/g, ' ').trim();
+  const markdown = cleanNodeText(node);
   return { type: 'text', markdown, caption: 'Text' };
 }
 
@@ -737,7 +793,7 @@ export function activate(ctx) {
         root.append(canvas);
 
         let regions = [], boxes = new Map(), selected = new Set(), layoutQueued = false, dragMoved = false;
-        let start = null, canvasBase = null;
+        let start = null, canvasBase = null, lastDragRect = null;
         let rawHits = 0, clickCount = 0, scopeLabel = '?', detectError = '', notice = '';
 
         const setSelected = (region, on) => {
@@ -746,7 +802,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          status.textContent = `v0.1.9 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          status.textContent = `v0.1.10 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
           debug.textContent = `debug · scope=${scopeLabel} found=${rawHits} clicks=${clickCount}`
             + (detectError ? ` · error: ${detectError}` : '')
@@ -798,21 +854,10 @@ export function activate(ctx) {
                   if (probe.matches?.(REGION_SELECTOR)) { matched = probe; break; }
                   probe = probe.parentElement;
                 }
-                // Fallback: pick any reasonably-sized text block inside transcript.
-                if (!matched) {
-                  probe = node;
-                  while (probe && probe !== document.body) {
-                    if (roots.some(root => root === probe || root.contains(probe))) {
-                      const text = String(probe.innerText || probe.textContent || '').trim();
-                      const rect = probe.getBoundingClientRect?.();
-                      if (text.length > 12 && rect && rect.width > 40 && rect.height > 12
-                        && !probe.closest?.('[data-plugin-session-surface], button, [role="button"]')) {
-                        matched = probe;
-                      }
-                      break;
-                    }
-                    probe = probe.parentElement;
-                  }
+                // Fallback: prefer the smallest real content block at this point.
+                if (!matched && node) {
+                  const preferred = preferRegionNode(node, { clientX: x, clientY: y });
+                  if (preferred && roots.some(root => root === preferred || root.contains(preferred))) matched = preferred;
                 }
                 if (matched && roots.some(root => root === matched || root.contains(matched))) found.add(matched);
               }
@@ -839,7 +884,7 @@ export function activate(ctx) {
             clickCount += 1;
             const on = !selected.has(region);
             setSelected(region, on);
-            logEvent('region-click', { on, type: region.type, label: region.label, tag: region.node?.tagName?.toLowerCase?.() || '', preview: String(region.node?.innerText || region.node?.textContent || '').slice(0, 120) });
+            logEvent('region-click', { on, type: region.type, label: region.label, tag: region.node?.tagName?.toLowerCase?.() || '', preview: cleanNodeText(region.node).slice(0, 120) });
             updateStatus();
           }, { signal });
           canvas.append(box);
@@ -884,7 +929,7 @@ export function activate(ctx) {
           logEvent('detect', {
             sessionId: session.sessionId, scope: scopeLabel, roots: roots.length,
             selectorNodes: selectorNodes.length, hitNodes: hitNodes.length, rawHits, regions: regions.length,
-            sample: regions.slice(0, 8).map(r => ({ type: r.type, label: r.label, tag: r.node?.tagName?.toLowerCase?.() || '', text: String(r.node?.innerText || r.node?.textContent || '').slice(0, 80) })),
+            sample: regions.slice(0, 8).map(r => ({ type: r.type, label: r.label, tag: r.node?.tagName?.toLowerCase?.() || '', text: cleanNodeText(r.node).slice(0, 80) })),
           });
           // The frame can still be sizing when content mounts. Always re-layout,
           // even when regions were found, because boxes may be positioned wrongly.
@@ -933,35 +978,38 @@ export function activate(ctx) {
           },
         }, { signal }), signal);
 
-        const point = event => {
-          const base = canvasBase || canvas.getBoundingClientRect();
-          return { x: event.clientX - base.left, y: event.clientY - base.top };
-        };
-        // Only start a drag from empty canvas. Region boxes handle their own
-        // native click, so pointer handling never swallows a selection.
+        // Drag is compared in viewport coordinates against live element rects:
+        // canvas-relative coordinates drift when the transcript scrolls.
         canvas.addEventListener('pointerdown', event => {
           if (signal.aborted || event.target.closest?.('.sn-region-box')) return;
           event.preventDefault();
           canvasBase = canvas.getBoundingClientRect();
-          start = point(event);
+          start = { x: event.clientX, y: event.clientY };
           dragMoved = false;
+          lastDragRect = null;
         }, { signal });
         document.addEventListener('pointermove', event => {
           if (!start || signal.aborted) return;
-          const current = point(event);
+          const current = { x: event.clientX, y: event.clientY };
           if (Math.abs(current.x - start.x) + Math.abs(current.y - start.y) > 5) dragMoved = true;
           if (!dragMoved) return;
           const rect = {
             left: Math.min(start.x, current.x), right: Math.max(start.x, current.x),
             top: Math.min(start.y, current.y), bottom: Math.max(start.y, current.y),
           };
+          lastDragRect = { ...rect };
+          const local = {
+            left: rect.left - canvasBase.left, top: rect.top - canvasBase.top,
+            right: rect.right - canvasBase.left, bottom: rect.bottom - canvasBase.top,
+          };
           dragBox.hidden = false;
-          dragBox.style.left = `${rect.left}px`;
-          dragBox.style.top = `${rect.top}px`;
-          dragBox.style.width = `${rect.right - rect.left}px`;
-          dragBox.style.height = `${rect.bottom - rect.top}px`;
+          dragBox.style.left = `${local.left}px`;
+          dragBox.style.top = `${local.top}px`;
+          dragBox.style.width = `${local.right - local.left}px`;
+          dragBox.style.height = `${local.bottom - local.top}px`;
           for (const [region, box] of boxes) {
-            if (region.rect && rectsOverlap(region.rect, rect)) {
+            const nodeRect = region.node.getBoundingClientRect?.();
+            if (nodeRect && rectsOverlap(nodeRect, rect)) {
               setSelected(region, true);
               box.classList.add('is-drag');
             } else box.classList.remove('is-drag');
@@ -970,7 +1018,10 @@ export function activate(ctx) {
         }, { signal });
         const finishDrag = () => {
           if (!start) return;
-          if (dragMoved) logEvent('drag-select', { selected: selected.size });
+          if (dragMoved) logEvent('drag-select', {
+            selected: selected.size, regions: regions.length,
+            rect: lastDragRect, scrollTop: document.querySelector('[role="log"] > div')?.scrollTop ?? null,
+          });
           for (const box of boxes.values()) box.classList.remove('is-drag');
           dragBox.hidden = true;
           dragBox.style.width = '0px';
@@ -1026,14 +1077,10 @@ export function activate(ctx) {
           const clicked = event.target;
           let node = clicked;
           while (node && node !== document.body && !node.matches?.(REGION_SELECTOR)) node = node.parentElement;
-          if (!node || node === document.body || node.closest?.('[data-plugin-session-surface]')) {
-            // Last resort: capture the clicked text block directly.
-            node = clicked;
-            while (node && node !== document.body) {
-              const text = String(node.innerText || node.textContent || '').trim();
-              if (text.length > 8 && !node.closest?.('[data-plugin-session-surface], button, [role="button"]')) break;
-              node = node.parentElement;
-            }
+          if (!node || node === document.body || node.matches?.(WRAPPER_SELECTOR)
+              || node.closest?.('[data-plugin-session-surface]')) {
+            // Avoid whole-session wrappers: choose the smallest block under the click.
+            node = preferRegionNode(clicked, event);
           }
           if (node && node !== document.body && !node.closest?.('[data-plugin-session-surface]')) {
             const region = findRegions([node])[0] || {
@@ -1043,7 +1090,7 @@ export function activate(ctx) {
             setSelected(region, true);
             clickCount += 1;
             layout();
-            logEvent('pick-selected', { type: region.type, label: region.label, tag: node.tagName?.toLowerCase?.() || '', preview: String(node.innerText || node.textContent || '').slice(0, 120) });
+            logEvent('pick-selected', { type: region.type, label: region.label, tag: node.tagName?.toLowerCase?.() || '', preview: cleanNodeText(node).slice(0, 120) });
             updateStatus();
           } else {
             logEvent('pick-missed', { tag: clicked?.tagName?.toLowerCase?.() || '' }, 'warn');

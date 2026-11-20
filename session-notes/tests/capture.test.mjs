@@ -184,6 +184,21 @@ test('findRegions accepts an array of nodes and drops giant session wrappers', (
   assert.deepEqual(regions.map(region => region.node), [paragraph]);
 });
 
+test('findRegions drops nodes with whole-session text', () => {
+  const make = text => ({
+    matches: value => value.split(', ').includes('p'),
+    contains: () => false,
+    closest: () => null,
+    getBoundingClientRect: () => ({ width: 400, height: 20 }),
+    innerText: text,
+    textContent: text,
+    querySelectorAll: () => [],
+  });
+  const giant = make('x'.repeat(900));
+  const fine = make('a short paragraph');
+  assert.deepEqual(findRegions([giant, fine]).map(region => region.node), [fine]);
+});
+
 test('regionToBlock reproduces tables, diagrams, code and text', () => {
   const cell = text => ({ textContent: text });
   const row = cells => ({ querySelectorAll: () => cells });
@@ -216,6 +231,17 @@ test('regionToBlock reproduces tables, diagrams, code and text', () => {
   } };
   assert.equal(regionToBlock(code).markdown, '```js\nconst x = 1;\n```');
   assert.equal(regionToBlock({ type: 'text', node: { innerText: '  hello  ' } }).markdown, 'hello');
+});
+
+test('regionToBlock collapses stacked math glyph lines', () => {
+  const node = {
+    innerText: '𝑧\nˉ\n=\n𝑎\n−\n𝑏\n𝑖\nz\nˉ\n=a−bi — the reflection across the real axis',
+    textContent: '𝑧ˉ=𝑎−𝑏𝑖zˉ=a−bi — the reflection across the real axis',
+  };
+  assert.equal(
+    regionToBlock({ type: 'text', node }).markdown,
+    '𝑧ˉ=𝑎−𝑏𝑖zˉ=a−bi — the reflection across the real axis',
+  );
 });
 
 test('rectsOverlap detects drag selection intersections', () => {
