@@ -374,15 +374,25 @@ export function findRegions(...scopes) {
       return count < 3;
     });
   const info = unique.map(node => ({ node, type: regionType(node), priority: regionPriority(node) }));
-  const kept = info.filter(({ node, priority }) => !info.some(other =>
-    other.node !== node && (
-      // Another element wraps this one and is a better/more specific capture.
-      (other.priority > priority && other.node.contains?.(node))
-      // Prefer the more specific child when a wrapper contains it.
-      || (other.priority >= priority && node.contains?.(other.node))
-      // A structured child (table/diagram/code) should replace its text wrapper.
-      || (priority < 3 && other.priority === 3 && node.contains?.(other.node))
-    )));
+  // Equivalent to the old all-pairs contains() scan, in one pass up ancestor chains:
+  // an ancestor outranks its descendant on strict priority; a descendant outranks
+  // its ancestor on ties. Equal-priority ancestors keep the descendant.
+  const priorityByNode = new Map(info.map(({ node, priority }) => [node, priority]));
+  const maxAncestor = new Map();
+  const maxDescendant = new Map();
+  for (const { node, priority } of info) {
+    let ancestorMax = -Infinity;
+    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+      const parentPriority = priorityByNode.get(parent);
+      if (parentPriority === undefined) continue;
+      if (parentPriority > ancestorMax) ancestorMax = parentPriority;
+      if (priority > (maxDescendant.get(parent) ?? -Infinity)) maxDescendant.set(parent, priority);
+    }
+    maxAncestor.set(node, ancestorMax);
+  }
+  const kept = info.filter(({ node, priority }) =>
+    (maxAncestor.get(node) ?? -Infinity) <= priority
+    && (maxDescendant.get(node) ?? -Infinity) < priority);
   const seenText = new Set();
   const deduped = kept.filter(({ node, type }) => {
     if (type !== 'text') return true;
@@ -401,7 +411,7 @@ export function findRegions(...scopes) {
       label: isImage ? 'Image' : type === 'table' ? 'Table' : type === 'diagram' ? 'Diagram' : type === 'code' ? 'Code' : 'Text',
       diagramIndex: isMermaid ? ++diagramIndex : -1,
     };
-  }).slice(0, 150);
+  });
 }
 
 /** Turn a selected DOM region into a note block. Diagrams keep their Mermaid source. */
@@ -802,7 +812,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          status.textContent = `v0.1.12 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          status.textContent = `v0.1.13 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
           debug.textContent = `debug · scope=${scopeLabel} found=${rawHits} clicks=${clickCount}`
             + (detectError ? ` · error: ${detectError}` : '')
@@ -814,9 +824,12 @@ export function activate(ctx) {
           layoutQueued = false;
           if (signal.aborted) return;
           canvasBase = canvas.getBoundingClientRect();
+          const measured = [];
           for (const [region, box] of boxes) {
             if (!region.node.isConnected) { box.remove(); boxes.delete(region); selected.delete(region); continue; }
-            const rect = region.node.getBoundingClientRect();
+            measured.push({ region, box, rect: region.node.getBoundingClientRect() });
+          }
+          for (const { region, box, rect } of measured) {
             region.rect = {
               left: rect.left - canvasBase.left, top: rect.top - canvasBase.top,
               right: rect.right - canvasBase.left, bottom: rect.bottom - canvasBase.top,
@@ -1005,14 +1018,18 @@ export function activate(ctx) {
             left: rect.left - canvasBase.left, top: rect.top - canvasBase.top,
             right: rect.right - canvasBase.left, bottom: rect.bottom - canvasBase.top,
           };
+          const overlaps = [];
+          for (const [region, box] of boxes) {
+            const nodeRect = region.node.getBoundingClientRect?.();
+            overlaps.push({ region, box, hit: !!(nodeRect && rectsOverlap(nodeRect, rect)) });
+          }
           dragBox.hidden = false;
           dragBox.style.left = `${local.left}px`;
           dragBox.style.top = `${local.top}px`;
           dragBox.style.width = `${local.right - local.left}px`;
           dragBox.style.height = `${local.bottom - local.top}px`;
-          for (const [region, box] of boxes) {
-            const nodeRect = region.node.getBoundingClientRect?.();
-            if (nodeRect && rectsOverlap(nodeRect, rect)) {
+          for (const { region, box, hit } of overlaps) {
+            if (hit) {
               setSelected(region, true);
               box.classList.add('is-drag');
             } else box.classList.remove('is-drag');
@@ -1066,6 +1083,7 @@ export function activate(ctx) {
           const frame = canvas.closest('[data-plugin-session-surface-frame]');
           if (frame) frame.style.pointerEvents = on ? 'none' : '';
           canvas.style.pointerEvents = on ? 'none' : '';
+          head.style.pointerEvents = on ? 'auto' : '';
           pickMode = on;
           pick.classList.toggle('is-active', on);
           pick.textContent = on ? 'Click transcript…' : 'Pick element';
@@ -1073,6 +1091,7 @@ export function activate(ctx) {
         };
         document.addEventListener('click', event => {
           if (!pickMode || signal.aborted) return;
+          if (pick.contains(event.target)) return;
           event.preventDefault();
           event.stopPropagation();
           if (event.target.closest?.('[data-plugin-session-surface]')) {

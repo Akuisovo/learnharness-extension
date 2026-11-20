@@ -145,9 +145,26 @@ test('findRegions keeps structured blocks ahead of their transcript wrappers', (
   const para = make('p');
   const diagram = make('mermaid');
   const wrapper = make('wrapper', [table, para, diagram]);
+  for (const child of wrapper.children) child.parentElement = wrapper;
   const regions = findRegions({ querySelectorAll: () => [wrapper, table, para, diagram] });
   assert.deepEqual(regions.map(region => region.type), ['table', 'text', 'diagram']);
   assert.deepEqual(regions.map(region => region.diagramIndex), [-1, -1, 0]);
+});
+
+test('findRegions returns every unique region in a long session', () => {
+  const nodes = Array.from({ length: 160 }, (_, i) => {
+    const text = `paragraph ${i}`;
+    return {
+      innerText: text,
+      textContent: text,
+      matches: value => value.split(', ').includes('p'),
+      contains: () => false,
+      closest: () => null,
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 100, bottom: 20, width: 100, height: 20 }),
+    };
+  });
+  const regions = findRegions({ querySelectorAll: () => nodes });
+  assert.equal(regions.length, 160);
 });
 
 test('findRegions merges transcript roots with hit-tested nodes and drops hidden ones', () => {
