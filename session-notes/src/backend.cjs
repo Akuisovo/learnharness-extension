@@ -2,9 +2,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { openStore } = require('./store.cjs');
+const { openStore, defaults } = require('./store.cjs');
 
 const ORGANIZATIONS = new Set(['session', 'topic', 'node']);
+const SORT_ORDERS = new Set(['updated-desc', 'updated-asc', 'title-asc']);
 const BLOCK_TYPES = new Set(['text', 'table', 'diagram', 'code']);
 const fail = message => { throw new Error(message); };
 const stamp = () => new Date().toISOString();
@@ -40,7 +41,8 @@ function noteMatches(note, query) {
   if (!query) return true;
   const haystack = [
     note.title, note.text, note.kind, note.sessionTitle,
-    ...(note.topics ?? []), ...(note.nodes ?? []).map(node => node.label ?? node.id ?? node),
+    ...(note.topics ?? []), ...(note.tags ?? []),
+    ...(note.nodes ?? []).map(node => node.label ?? node.id ?? node),
     ...(note.blocks ?? []).flatMap(block => [block.caption, block.markdown]),
   ].filter(Boolean).join('\n').toLocaleLowerCase();
   return query.toLocaleLowerCase().split(/\s+/).filter(Boolean).every(term => haystack.includes(term));
@@ -112,7 +114,7 @@ function activate(ctx) {
         alive();
         if (input !== undefined && (!input || typeof input !== 'object' || Array.isArray(input))) fail('Invalid operation input.');
         const result = handler(input ?? {});
-        if (name === 'create-note' || name === 'add-block' || name === 'add-blocks' || name === 'delete-note' || name === 'clear-notes') {
+        if (['create-note', 'save-note', 'add-block', 'add-blocks', 'update-block', 'delete-block', 'move-block', 'duplicate-note', 'delete-note', 'clear-notes'].includes(name)) {
           appendLog({ event: 'backend', data: { operation: name, ok: true } });
         }
         return result;
@@ -132,7 +134,7 @@ function activate(ctx) {
 
   register('get-state', () => {
     const s = store.get();
-    return { revision: s.revision, settings: { ...s.settings }, notes: Object.values(s.notes) };
+    return { revision: s.revision, settings: { ...defaults(), ...s.settings }, notes: Object.values(s.notes) };
   });
   register('get-catalog', () => catalog());
   register('get-note', input => ({ note: note(store.get(), input.id) }));
@@ -211,6 +213,74 @@ function activate(ctx) {
     }) };
   });
 
+  /** Edit a captured block in place without changing its identity or order. */
+  register('update-block', input => {
+    const patch = input.patch;
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) fail('Block patch must be an object.');
+    const allowed = new Set(['type', 'caption', 'markdown']);
+    for (const key of Object.keys(patch)) if (!allowed.has(key)) fail(`Unsupported block field: ${key}`);
+    if (patch.type !== undefined && !BLOCK_TYPES.has(patch.type)) fail('Invalid block type.');
+    if (patch.markdown !== undefined) {
+      text(patch.markdown, 'Block content', 40000);
+      if (!patch.markdown.trim()) fail('Block content must not be empty.');
+    }
+    return { note: change(s => {
+      const target = note(s, input.id);
+      const block = (target.blocks ?? []).find(row => row.id === input.blockId);
+      if (!block) fail('Block not found.');
+      if (patch.type !== undefined) block.type = patch.type;
+      if (patch.caption !== undefined) block.caption = short(patch.caption, 'Block caption', 500);
+      if (patch.markdown !== undefined) block.markdown = patch.markdown;
+      target.updatedAt = stamp();
+      return target;
+    }) };
+  });
+
+  register('delete-block', input => {
+    return { note: change(s => {
+      const target = note(s, input.id);
+      const blocks = target.blocks ?? [];
+      const remaining = blocks.filter(block => block.id !== input.blockId);
+      if (remaining.length === blocks.length) fail('Block not found.');
+      target.blocks = remaining;
+      target.updatedAt = stamp();
+      return target;
+    }) };
+  });
+
+  register('move-block', input => {
+    if (input.direction !== 'up' && input.direction !== 'down') fail('Move direction must be up or down.');
+    return { note: change(s => {
+      const target = note(s, input.id);
+      const blocks = target.blocks ?? [];
+      const index = blocks.findIndex(block => block.id === input.blockId);
+      if (index < 0) fail('Block not found.');
+      const next = index + (input.direction === 'up' ? -1 : 1);
+      if (next < 0 || next >= blocks.length) fail(`Block is already at the ${input.direction === 'up' ? 'top' : 'bottom'}.`);
+      [blocks[index], blocks[next]] = [blocks[next], blocks[index]];
+      target.blocks = blocks;
+      target.updatedAt = stamp();
+      return target;
+    }) };
+  });
+
+  register('duplicate-note', input => {
+    const duplicated = change(s => {
+      const source = note(s, input.id);
+      const copy = structuredClone(source);
+      copy.id = randomUUID();
+      copy.title = short(`${source.title || 'Untitled note'} (copy)`, 'Title', 300);
+      copy.createdAt = stamp();
+      copy.updatedAt = stamp();
+      copy.blocks = (source.blocks ?? []).slice(0, 200).map(block => normalizeBlock({
+        type: block.type, caption: block.caption, markdown: block.markdown,
+      }));
+      s.notes[copy.id] = copy;
+      return copy;
+    });
+    return { note: duplicated };
+  });
+
   register('delete-note', input => {
     change(s => { note(s, input.id); delete s.notes[input.id]; });
     return { ok: true };
@@ -228,7 +298,11 @@ function activate(ctx) {
         if (!ORGANIZATIONS.has(patch.organization)) fail('Invalid organization mode.');
         s.settings.organization = patch.organization;
       }
-      return { ...s.settings };
+      if (patch.sort !== undefined) {
+        if (!SORT_ORDERS.has(patch.sort)) fail('Invalid sort order.');
+        s.settings.sort = patch.sort;
+      }
+      return { ...defaults(), ...s.settings };
     }) };
   });
 

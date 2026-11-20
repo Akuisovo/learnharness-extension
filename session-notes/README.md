@@ -49,6 +49,11 @@ by session or by knowledge-web topic/node, and supports full-text search.
   The overlay's `debug` line shows the filename. It records detection counts and
   samples, region picks, drags, add/save results and errors as JSON lines — send
   this file when reporting a problem.
+- **Note management.** Every captured block has top-right controls to **delete**,
+  **edit**, **copy**, or move it **up/down**. The note header can **duplicate**
+  the note or **export** it as Markdown. Tags are editable comma-separated
+  fields, and the sorted list can be ordered by newest, oldest, or title; the
+  choice is saved with the other note settings.
 - **Organisation.** Switch between **By session**, **By topic**, and **By
   knowledge node**. Topics can be typed (with suggestions from the knowledge
   web's clusters); nodes are chosen with the native knowledge picker and map to

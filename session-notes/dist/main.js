@@ -11,6 +11,12 @@ const message = error => error instanceof Error ? error.message : String(error);
 const notesIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h11l3 3v13H5z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>';
 const addNoteIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h11l3 3v5"/><path d="M5 4v16h8"/><path d="M17 14v7M13.5 17.5h7"/></svg>';
 const trashIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>';
+const editIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>';
+const copyIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>';
+const upIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>';
+const downIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg>';
+const exportIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M4 14v5h16v-5"/></svg>';
+const duplicateIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>';
 
 /** Combine caller lifetimes so every UI widget is scoped to the shortest owner. */
 function lifetime(...parents) {
@@ -248,6 +254,50 @@ export function previewBlock(block) {
     .replace(/\s+/g, ' ')
     .trim();
   return value.slice(0, 220) || (block?.caption || block?.type || 'Empty block');
+}
+
+/** Portable Markdown export for a note and its captured blocks. */
+export function noteToMarkdown(note) {
+  const lines = [`# ${note?.title || 'Untitled note'}`, ''];
+  const metadata = [
+    ['Session', note?.sessionTitle || ''],
+    ['Topics', (note?.topics || []).join(', ')],
+    ['Tags', (note?.tags || []).join(', ')],
+    ['Nodes', (note?.nodes || []).map(node => node?.label || node?.id || node).join(', ')],
+  ].filter(([, value]) => value);
+  for (const [label, value] of metadata) lines.push(`- **${label}:** ${value}`);
+  if (metadata.length) lines.push('');
+  if (String(note?.text || '').trim()) lines.push(String(note.text).trim(), '');
+  const blocks = note?.blocks || [];
+  if (blocks.length) {
+    lines.push('## Captured blocks', '');
+    blocks.forEach((block, index) => {
+      lines.push(`### ${index + 1}. ${block?.caption || block?.type || 'Block'}`, '');
+      lines.push(String(block?.markdown || '').trim(), '');
+    });
+  }
+  return lines.join('\n').trim() + '\n';
+}
+
+/** Copy text using the host clipboard when available, with a local fallback. */
+async function copyToClipboard(value) {
+  if (globalThis.navigator?.clipboard?.writeText) {
+    await globalThis.navigator.clipboard.writeText(value);
+    return;
+  }
+  const doc = globalThis.document;
+  if (typeof doc?.createElement !== 'function') throw new Error('Clipboard is unavailable.');
+  const area = doc.createElement('textarea');
+  area.value = value;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.top = '-1000px';
+  area.style.opacity = '0';
+  doc.body.append(area);
+  area.select();
+  try {
+    if (!doc.execCommand?.('copy')) throw new Error('Clipboard is unavailable.');
+  } finally { area.remove(); }
 }
 
 /** Native transcript elements that can be turned into note blocks.
@@ -840,7 +890,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          const nextStatus = `v0.1.17 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          const nextStatus = `v0.1.18 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           if (nextStatus !== lastStatus) { status.textContent = nextStatus; lastStatus = nextStatus; }
           const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
           const nextDebug = `debug · scope=${scopeLabel} candidates=${candidateCount} clicks=${clickCount}`
@@ -1264,7 +1314,15 @@ export function activate(ctx) {
       org.append(option);
     }
     org.value = snapshot?.settings?.organization || 'session';
-    toolbar.append(el('span', 'sn-spacer'), search, org);
+    const sort = el('select', 'sn-select');
+    sort.setAttribute('aria-label', 'Sort notes');
+    for (const [value, label] of [['updated-desc', 'Newest first'], ['updated-asc', 'Oldest first'], ['title-asc', 'Title A–Z']]) {
+      const option = el('option', '', label);
+      option.value = value;
+      sort.append(option);
+    }
+    sort.value = snapshot?.settings?.sort || 'updated-desc';
+    toolbar.append(el('span', 'sn-spacer'), search, sort, org);
     root.append(toolbar, error);
 
     const body = el('div', 'sn-body');
@@ -1275,12 +1333,16 @@ export function activate(ctx) {
     const empty = el('p', 'sn-empty', 'No notes yet. Use “Add to notes” in a session, or create one above.');
     root.append(empty);
 
-    let organization = org.value, selectedId = null, filtered = null, searchSeq = 0;
+    let organization = org.value, sortOrder = sort.value, selectedId = null, filtered = null, searchSeq = 0;
     const expandedGroups = new Set();
     let tree;
 
-    const notes = () => [...(filtered ?? snapshot?.notes ?? [])]
-      .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    const notes = () => {
+      const list = [...(filtered ?? snapshot?.notes ?? [])];
+      if (sortOrder === 'title-asc') return list.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+      if (sortOrder === 'updated-asc') return list.sort((a, b) => (a.updatedAt || '').localeCompare(b.updatedAt || ''));
+      return list.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    };
 
     function groupLabels(noteRecord) {
       if (organization === 'session') return [noteRecord.sessionTitle || 'Manual notes'];
@@ -1332,8 +1394,55 @@ export function activate(ctx) {
         detailPane.append(el('p', 'sn-empty', 'Select a note to read and edit it, or create a new one.'));
         return;
       }
+      const detailError = el('p', 'sn-error');
+      detailError.setAttribute('role', 'alert');
+      detailError.hidden = true;
+      const report = cause => { if (!viewSignal.aborted) { detailError.hidden = false; detailError.textContent = message(cause); } };
+      const clearReport = () => { if (!viewSignal.aborted) { detailError.hidden = true; detailError.textContent = ''; } };
+
+      const openExportDialog = () => {
+        const markdown = noteToMarkdown(noteRecord);
+        logEvent('note-action', { action: 'export-open', noteId: noteRecord.id });
+        const dialog = ctx.ui.openDialog({
+          title: 'Export note',
+          content: (host, dialogSignal) => {
+            const pane = el('div', 'sn-settings');
+            host.append(pane);
+            pane.append(el('h3', 'sn-title', 'Export as Markdown'));
+            const area = el('textarea', 'sn-textarea sn-export-text', markdown);
+            area.readOnly = true;
+            area.setAttribute('aria-label', 'Markdown export');
+            pane.append(area);
+            const actions = el('div', 'sn-toolbar');
+            pane.append(actions);
+            const dialogError = el('span', 'sn-error');
+            dialogError.hidden = true;
+            button(actions, 'Copy all', async () => {
+              try {
+                await copyToClipboard(markdown);
+                dialogError.hidden = true;
+                logEvent('note-action', { action: 'export-copy', noteId: noteRecord.id });
+              } catch (cause) { dialogError.hidden = false; dialogError.textContent = message(cause); }
+            }, dialogSignal, { icon: copyIcon });
+            pane.append(dialogError);
+            button(actions, 'Close', () => dialog.dispose(), dialogSignal);
+          },
+        }, { signal: viewSignal });
+      };
+
       const head = el('div', 'sn-detail-head');
       head.append(el('h3', 'sn-title', noteRecord.title || 'Untitled note'));
+      button(head, 'Duplicate', async () => {
+        try {
+          const { note: created } = await mutate('duplicate-note', { id: noteRecord.id }, viewSignal);
+          logEvent('note-action', { action: 'duplicate-note', noteId: noteRecord.id, createdId: created.id });
+          selectedId = created.id;
+          clearReport();
+          renderTree();
+          renderDetail();
+        } catch (cause) { report(cause); }
+      }, viewSignal, { icon: duplicateIcon, title: 'Duplicate note' });
+      button(head, 'Export', openExportDialog, viewSignal, { icon: exportIcon, title: 'Export note as Markdown' });
       button(head, 'Delete', () => {
         const dialog = ctx.ui.openDialog({
           title: 'Delete note',
@@ -1345,22 +1454,18 @@ export function activate(ctx) {
             pane.append(actions);
             button(actions, 'Cancel', () => dialog.dispose(), dialogSignal);
             button(actions, 'Delete', async () => {
-              await mutate('delete-note', { id: noteRecord.id }, dialogSignal);
-              selectedId = null;
-              dialog.dispose();
-              renderTree();
-              renderDetail();
+              try {
+                await mutate('delete-note', { id: noteRecord.id }, dialogSignal);
+                selectedId = null;
+                dialog.dispose();
+                renderTree();
+                renderDetail();
+              } catch (cause) { report(cause); }
             }, dialogSignal, { variant: 'destructive' });
           },
         }, { signal: viewSignal });
       }, viewSignal, { icon: trashIcon, iconOnly: true, variant: 'ghost', title: 'Delete note', size: 'icon-sm' });
-      detailPane.append(head);
-
-      const detailError = el('p', 'sn-error');
-      detailError.setAttribute('role', 'alert');
-      detailError.hidden = true;
-      detailPane.append(detailError);
-      const report = cause => { if (!viewSignal.aborted) { detailError.hidden = false; detailError.textContent = message(cause); } };
+      detailPane.append(head, detailError);
 
       const titleField = el('label', 'sn-field');
       const titleInput = el('input', 'sn-input');
@@ -1389,6 +1494,14 @@ export function activate(ctx) {
       }
       topicField.append(el('span', 'sn-label', 'Topics (comma separated)'), topicInput, datalist);
       detailPane.append(topicField);
+
+      const tagsField = el('label', 'sn-field');
+      const tagsInput = el('input', 'sn-input');
+      tagsInput.type = 'text';
+      tagsInput.value = (noteRecord.tags || []).join(', ');
+      tagsInput.placeholder = 'exam, revision, weak-area';
+      tagsField.append(el('span', 'sn-label', 'Tags (comma separated)'), tagsInput);
+      detailPane.append(tagsField);
 
       let nodeIds = (noteRecord.nodes || []).map(node => node.id || node);
       if (typeof ctx.ui.mountKnowledgePicker === 'function') {
@@ -1423,8 +1536,10 @@ export function activate(ctx) {
             title: titleInput.value,
             text: textArea.value,
             topics: topicInput.value.split(','),
+            tags: tagsInput.value.split(','),
             nodeIds, nodeLabels: labels,
           }, viewSignal);
+          clearReport();
           clearError();
         } catch (cause) { report(cause); }
       }, viewSignal, { variant: 'default' });
@@ -1433,16 +1548,85 @@ export function activate(ctx) {
       if (noteRecord.blocks?.length) {
         const blocks = el('div', 'sn-blocks');
         blocks.append(el('div', 'sn-label', 'Captured blocks'));
-        for (const block of noteRecord.blocks) {
+        noteRecord.blocks.forEach((block, index) => {
           const card = el('div', 'sn-block');
           const cardHead = el('div', 'sn-block-head');
-          cardHead.append(el('span', 'sn-block-badge', block.type || 'text'));
-          if (block.caption) cardHead.append(el('span', '', block.caption));
+          const meta = el('div', 'sn-block-meta');
+          meta.append(el('span', 'sn-block-badge', block.type || 'text'));
+          if (block.caption) meta.append(el('span', '', block.caption));
+          const actions = el('div', 'sn-block-actions');
+          const runBlockOperation = async (operation, input) => {
+            try {
+              await mutate(operation, input, viewSignal);
+              logEvent('note-action', { action: operation, noteId: noteRecord.id, blockId: block.id });
+              clearReport();
+            } catch (cause) { report(cause); }
+          };
+          const openEditDialog = () => {
+            const dialog = ctx.ui.openDialog({
+              title: 'Edit captured block',
+              content: (host, dialogSignal) => {
+                const pane = el('div', 'sn-settings');
+                host.append(pane);
+                const typeField = el('label', 'sn-field');
+                const typeSelect = el('select', 'sn-select');
+                for (const value of ['text', 'table', 'diagram', 'code']) {
+                  const option = el('option', '', value);
+                  option.value = value;
+                  typeSelect.append(option);
+                }
+                typeSelect.value = block.type || 'text';
+                typeField.append(el('span', 'sn-label', 'Block type'), typeSelect);
+                const captionField = el('label', 'sn-field');
+                const captionInput = el('input', 'sn-input');
+                captionInput.value = block.caption || '';
+                captionField.append(el('span', 'sn-label', 'Caption'), captionInput);
+                const markdownField = el('label', 'sn-field');
+                const markdownInput = el('textarea', 'sn-textarea sn-export-text');
+                markdownInput.value = block.markdown || '';
+                markdownField.append(el('span', 'sn-label', 'Markdown'), markdownInput);
+                const dialogActions = el('div', 'sn-toolbar');
+                pane.append(typeField, captionField, markdownField, dialogActions);
+                button(dialogActions, 'Cancel', () => dialog.dispose(), dialogSignal);
+                button(dialogActions, 'Save', async () => {
+                  try {
+                    await mutate('update-block', {
+                      id: noteRecord.id, blockId: block.id,
+                      patch: { type: typeSelect.value, caption: captionInput.value, markdown: markdownInput.value },
+                    }, dialogSignal);
+                    dialog.dispose();
+                    clearReport();
+                  } catch (cause) { report(cause); }
+                }, dialogSignal, { variant: 'default' });
+              },
+            }, { signal: viewSignal });
+          };
+          const iconButton = (label, icon, action, options = {}) => button(actions, label, action, viewSignal, {
+            icon, iconOnly: true, variant: 'ghost', size: 'icon-xs', title: label, ...options,
+          });
+          iconButton('Move block up', upIcon, () => runBlockOperation('move-block', {
+            id: noteRecord.id, blockId: block.id, direction: 'up',
+          }), { disabled: index === 0 });
+          iconButton('Move block down', downIcon, () => runBlockOperation('move-block', {
+            id: noteRecord.id, blockId: block.id, direction: 'down',
+          }), { disabled: index === noteRecord.blocks.length - 1 });
+          iconButton('Edit block', editIcon, openEditDialog);
+          iconButton('Copy block', copyIcon, async () => {
+            try {
+              await copyToClipboard(block.markdown || '');
+              logEvent('note-action', { action: 'copy-block', noteId: noteRecord.id, blockId: block.id });
+              clearReport();
+            } catch (cause) { report(cause); }
+          });
+          iconButton('Delete block', trashIcon, () => runBlockOperation('delete-block', {
+            id: noteRecord.id, blockId: block.id,
+          }), { variant: 'destructive' });
+          cardHead.append(meta, actions);
           card.append(cardHead);
           if (block.type === 'text') card.append(el('pre', 'sn-plain-text', block.markdown || ''));
           else markdown(card, block.markdown, viewSignal);
           blocks.append(card);
-        }
+        });
         detailPane.append(blocks);
       }
     }
@@ -1482,10 +1666,26 @@ export function activate(ctx) {
       catch (cause) { showError(cause); }
     }, { signal: viewSignal });
 
+    sort.addEventListener('change', async () => {
+      sortOrder = sort.value;
+      logEvent('note-action', { action: 'sort-notes', sort: sortOrder });
+      renderTree();
+      try { await mutate('save-settings', { patch: { sort: sortOrder } }, viewSignal); clearError(); }
+      catch (cause) { showError(cause); }
+    }, { signal: viewSignal });
+
     void ensureCatalog().then(() => { if (!viewSignal.aborted) renderDetail(); });
     observe(value => {
       if (!value) return;
       if (selectedId && !(value.notes || []).some(note => note.id === selectedId)) selectedId = null;
+      if (value.settings?.organization && value.settings.organization !== organization) {
+        organization = value.settings.organization;
+        org.value = organization;
+      }
+      if (value.settings?.sort && value.settings.sort !== sortOrder) {
+        sortOrder = value.settings.sort;
+        sort.value = sortOrder;
+      }
       renderTree();
       renderDetail();
     }, viewSignal);
@@ -1497,7 +1697,7 @@ export function activate(ctx) {
     const root = el('div', 'sn-settings');
     container.append(root);
     root.append(el('h2', 'sn-title', 'Session Notes'));
-    root.append(el('p', 'sn-hint', 'Notes are stored locally by this plugin. Use “Add to notes” from a teaching or practice session to capture text, tables and diagrams through the plugin overlay, then organise them by session, topic or knowledge node.'));
+    root.append(el('p', 'sn-hint', 'Notes are stored locally by this plugin. Use “Add to notes” from a teaching or practice session to capture text, tables and diagrams, then manage blocks and organise notes by session, topic, tag or knowledge node.'));
 
     const orgField = el('label', 'sn-field');
     const org = el('select', 'sn-select');
@@ -1509,12 +1709,27 @@ export function activate(ctx) {
     org.value = snapshot?.settings?.organization || 'session';
     orgField.append(el('span', 'sn-label', 'Default organisation'), org);
     root.append(orgField);
+
+    const sortField = el('label', 'sn-field');
+    const sort = el('select', 'sn-select');
+    for (const [value, label] of [['updated-desc', 'Newest first'], ['updated-asc', 'Oldest first'], ['title-asc', 'Title A–Z']]) {
+      const option = el('option', '', label);
+      option.value = value;
+      sort.append(option);
+    }
+    sort.value = snapshot?.settings?.sort || 'updated-desc';
+    sortField.append(el('span', 'sn-label', 'Default note order'), sort);
+    root.append(sortField);
     const error = el('p', 'sn-error');
     error.setAttribute('role', 'alert');
     error.hidden = true;
     root.append(error);
     org.addEventListener('change', async () => {
       try { await mutate('save-settings', { patch: { organization: org.value } }, scope.signal); error.hidden = true; }
+      catch (cause) { error.hidden = false; error.textContent = message(cause); }
+    }, { signal: scope.signal });
+    sort.addEventListener('change', async () => {
+      try { await mutate('save-settings', { patch: { sort: sort.value } }, scope.signal); error.hidden = true; }
       catch (cause) { error.hidden = false; error.textContent = message(cause); }
     }, { signal: scope.signal });
 
@@ -1537,7 +1752,10 @@ export function activate(ctx) {
         },
       }, { signal: scope.signal });
     }, scope.signal, { variant: 'destructive', icon: trashIcon });
-    observe(value => { if (value?.settings?.organization) org.value = value.settings.organization; }, scope.signal);
+    observe(value => {
+      if (value?.settings?.organization) org.value = value.settings.organization;
+      if (value?.settings?.sort) sort.value = value.settings.sort;
+    }, scope.signal);
   }
 
   registrations.push(ctx.registerView({ id: 'notes', name: 'Notes', mount: mountNotesView }));

@@ -21,7 +21,7 @@ function atomicWrite(file, content) {
   }
 }
 
-const defaults = () => ({ organization: 'session' });
+const defaults = () => ({ organization: 'session', sort: 'updated-desc' });
 const empty = () => ({ version: 1, revision: 0, notes: {}, settings: defaults() });
 
 /** Open (or create) the plugin-owned JSON store in the host-provided data directory. */

@@ -35,7 +35,7 @@ function harness() {
 
 test('activate registers every documented operation', () => {
   const { handlers } = harness();
-  for (const name of ['get-state', 'get-catalog', 'get-note', 'create-note', 'save-note', 'add-block', 'add-blocks', 'delete-note', 'search-notes', 'save-settings', 'clear-notes', 'append-log', 'get-log-info']) {
+  for (const name of ['get-state', 'get-catalog', 'get-note', 'create-note', 'save-note', 'add-block', 'add-blocks', 'update-block', 'delete-block', 'move-block', 'duplicate-note', 'delete-note', 'search-notes', 'save-settings', 'clear-notes', 'append-log', 'get-log-info']) {
     assert.equal(typeof handlers.get(name), 'function', `missing ${name}`);
   }
 });
@@ -117,6 +117,56 @@ test('add-blocks appends several blocks in one change and validates input', () =
   assert.throws(() => call('add-blocks', { id: note.id, blocks: [] }), /At least one block/);
 });
 
+test('captured blocks can be edited, reordered and deleted', () => {
+  const { call, emitted } = harness();
+  const { note } = call('create-note', {
+    title: 'Blocks',
+    blocks: [
+      { type: 'text', markdown: 'first' },
+      { type: 'table', markdown: '| a | b |\n|---|---|\n| 1 | 2 |', caption: 'Marks' },
+    ],
+  });
+  const [first, second] = note.blocks;
+  const before = emitted.length;
+
+  const edited = call('update-block', {
+    id: note.id, blockId: first.id,
+    patch: { type: 'code', caption: 'Snippet', markdown: 'const x = 1;' },
+  }).note;
+  assert.equal(edited.blocks[0].type, 'code');
+  assert.equal(edited.blocks[0].caption, 'Snippet');
+  assert.equal(edited.blocks[0].markdown, 'const x = 1;');
+  assert.equal(edited.blocks[0].id, first.id);
+
+  const moved = call('move-block', { id: note.id, blockId: second.id, direction: 'up' }).note;
+  assert.deepEqual(moved.blocks.map(block => block.id), [second.id, first.id]);
+  assert.throws(() => call('move-block', { id: note.id, blockId: second.id, direction: 'up' }), /already at the top/);
+
+  const deleted = call('delete-block', { id: note.id, blockId: first.id }).note;
+  assert.deepEqual(deleted.blocks.map(block => block.id), [second.id]);
+  assert.throws(() => call('delete-block', { id: note.id, blockId: first.id }), /Block not found/);
+  assert.throws(() => call('update-block', { id: note.id, blockId: second.id, patch: { nope: true } }), /Unsupported block field/);
+  assert.ok(emitted.length >= before + 3);
+});
+
+test('duplicate-note creates an independent copy with fresh block ids', () => {
+  const { call } = harness();
+  const { note } = call('create-note', {
+    title: 'Original', text: 'body', topics: ['Topic'], tags: ['exam'],
+    blocks: [{ type: 'diagram', markdown: '```mermaid\ngraph LR; A-->B\n```', caption: 'Map' }],
+  });
+  const { note: copy } = call('duplicate-note', { id: note.id });
+  assert.notEqual(copy.id, note.id);
+  assert.equal(copy.title, 'Original (copy)');
+  assert.equal(copy.text, 'body');
+  assert.deepEqual(copy.topics, ['Topic']);
+  assert.deepEqual(copy.tags, ['exam']);
+  assert.equal(copy.blocks.length, 1);
+  assert.notEqual(copy.blocks[0].id, note.blocks[0].id);
+  assert.equal(copy.blocks[0].markdown, note.blocks[0].markdown);
+  assert.equal(call('get-note', { id: note.id }).note.title, 'Original');
+});
+
 test('save-note updates allowed fields and rejects unknown fields', () => {
   const { call } = harness();
   const { note } = call('create-note', { title: 'Old', text: 'body' });
@@ -143,9 +193,12 @@ test('search-notes matches titles, text, topics and captured blocks', () => {
 
 test('settings and destructive operations are validated', () => {
   const { call } = harness();
-  assert.deepEqual(call('save-settings', { patch: { organization: 'topic' } }).settings, { organization: 'topic' });
+  assert.deepEqual(call('save-settings', { patch: { organization: 'topic' } }).settings, { organization: 'topic', sort: 'updated-desc' });
   assert.throws(() => call('save-settings', { patch: { organization: 'nope' } }), /Invalid organization/);
+  assert.deepEqual(call('save-settings', { patch: { sort: 'title-asc' } }).settings, { organization: 'topic', sort: 'title-asc' });
+  assert.throws(() => call('save-settings', { patch: { sort: 'nope' } }), /Invalid sort order/);
   assert.equal(call('get-state').settings.organization, 'topic');
+  assert.equal(call('get-state').settings.sort, 'title-asc');
   call('create-note', { title: 'to delete' });
   assert.equal(call('get-state').notes.length, 1);
   assert.equal(call('clear-notes').ok, true);
@@ -156,5 +209,6 @@ test('normalizeBlock and noteMatches enforce input contracts', () => {
   assert.throws(() => normalizeBlock({ type: 'table', markdown: '   ' }), /must not be empty/);
   assert.equal(normalizeBlock({ type: 'unknown', markdown: 'hello' }).type, 'text');
   assert.equal(noteMatches({ title: 'A', text: 'b' }, 'a b'), true);
+  assert.equal(noteMatches({ title: 'A', text: 'b', tags: ['exam'] }, 'exam'), true);
   assert.equal(noteMatches({ title: 'A', text: 'b' }, 'a z'), false);
 });

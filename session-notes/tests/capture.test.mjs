@@ -4,7 +4,7 @@ import {
   splitMarkdown, collectSources, sourceStrings, blocksFromView,
   tableToMarkdown, fenceSources, captureFromElement, readSelection, topLevelCaptures, previewBlock,
   diagramSources, findRegions, regionToBlock, rectsOverlap, REGION_SELECTOR,
-  regionAtPointFromRects,
+  regionAtPointFromRects, noteToMarkdown,
 } from '../src/main.js';
 
 test('splitMarkdown finds pipe tables with and without outer pipes', () => {
@@ -94,6 +94,26 @@ test('tableToMarkdown sizes the separator to the widest row and handles line bre
   const lines = tableToMarkdown(table).split('\n');
   assert.equal(lines[1], '| --- | --- | --- |');
   assert.equal(lines[2], '| one two | 2 | 3 |');
+});
+
+test('noteToMarkdown exports note metadata, prose and captured blocks', () => {
+  const markdown = noteToMarkdown({
+    title: 'Complex numbers', sessionTitle: 'IB AA HL', text: 'Remember De Moivre.',
+    topics: ['Complex'], tags: ['exam', 'revision'],
+    nodes: [{ id: 'n1', label: 'Polar form' }],
+    blocks: [
+      { type: 'table', caption: 'Marks', markdown: '| A | B |\n|---|---|\n| 1 | 2 |' },
+      { type: 'diagram', caption: 'Map', markdown: '```mermaid\ngraph LR; A-->B\n```' },
+    ],
+  });
+  assert.match(markdown, /^# Complex numbers\n/);
+  assert.match(markdown, /- \*\*Session:\*\* IB AA HL/);
+  assert.match(markdown, /- \*\*Tags:\*\* exam, revision/);
+  assert.match(markdown, /- \*\*Nodes:\*\* Polar form/);
+  assert.match(markdown, /Remember De Moivre\./);
+  assert.match(markdown, /### 1\. Marks/);
+  assert.match(markdown, /### 2\. Map/);
+  assert.match(markdown, /```mermaid/);
 });
 
 test('captureFromElement prefers the original diagram source and skips nested matches', () => {
