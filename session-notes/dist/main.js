@@ -802,7 +802,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          status.textContent = `v0.1.11 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          status.textContent = `v0.1.12 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
           debug.textContent = `debug · scope=${scopeLabel} found=${rawHits} clicks=${clickCount}`
             + (detectError ? ` · error: ${detectError}` : '')
@@ -1088,10 +1088,13 @@ export function activate(ctx) {
             // Avoid whole-session wrappers: choose the smallest block under the click.
             node = preferRegionNode(clicked, event);
           }
-          if (node && node !== document.body && !node.closest?.('[data-plugin-session-surface]')) {
-            const region = findRegions([node])[0] || {
-              node, type: regionType(node), isImage: false, label: 'Text', diagramIndex: -1,
-            };
+          let region = node && node !== document.body && !node.closest?.('[data-plugin-session-surface]')
+            ? findRegions([node])[0] : null;
+          if (!region) {
+            node = preferRegionNode(clicked, event);
+            region = node ? findRegions([node])[0] : null;
+          }
+          if (region) {
             if (!boxes.has(region)) { regions.push(region); addBox(region); }
             setSelected(region, true);
             clickCount += 1;
