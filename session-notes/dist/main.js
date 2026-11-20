@@ -361,11 +361,11 @@ export function findRegions(...scopes) {
   const unique = [...new Set(nodes)]
     .filter(node => !node.closest?.('[data-plugin-session-surface], [data-session-surface-mounts]'))
     .filter(regionVisible)
-    .filter(node => {
+    .map(node => ({ node, text: cleanNodeText(node) }))
+    .filter(({ node, text }) => {
       if (node.matches?.(HIGH_PRIORITY)) return true;
       // Never select whole-session wrappers or tool/message cards as one block.
       if (node.matches?.(WRAPPER_SELECTOR)) return false;
-      const text = cleanNodeText(node);
       if (text.length > 800) return false;
       const rect = node.getBoundingClientRect?.();
       const viewport = (globalThis.innerWidth || 1200) * (globalThis.innerHeight || 800);
@@ -373,7 +373,7 @@ export function findRegions(...scopes) {
       const count = node.querySelectorAll?.('[data-source-message-id], [data-testid="user-message"], [data-testid="md-mermaid"], [data-streamdown="mermaid"], table, [data-streamdown="code-block"], [data-testid="tool-call-card"]').length || 0;
       return count < 3;
     });
-  const info = unique.map(node => ({ node, type: regionType(node), priority: regionPriority(node) }));
+  const info = unique.map(({ node, text }) => ({ node, text, type: regionType(node), priority: regionPriority(node) }));
   // Equivalent to the old all-pairs contains() scan, in one pass up ancestor chains:
   // an ancestor outranks its descendant on strict priority; a descendant outranks
   // its ancestor on ties. Equal-priority ancestors keep the descendant.
@@ -394,9 +394,9 @@ export function findRegions(...scopes) {
     (maxAncestor.get(node) ?? -Infinity) <= priority
     && (maxDescendant.get(node) ?? -Infinity) < priority);
   const seenText = new Set();
-  const deduped = kept.filter(({ node, type }) => {
+  const deduped = kept.filter(({ text, type }) => {
     if (type !== 'text') return true;
-    const key = cleanNodeText(node).slice(0, 200);
+    const key = text.slice(0, 200);
     if (key && seenText.has(key)) return false;
     if (key) seenText.add(key);
     return true;
@@ -469,6 +469,7 @@ export function activate(ctx) {
     }
   }
   let snapshot = null, catalogCache = null, refreshing = null, refreshAgain = false, logPath = '';
+  let overlayScope = null;
   const observers = new Set(), registrations = [];
   const safeData = value => {
     try { return JSON.parse(JSON.stringify(value)); } catch { return { note: 'unserializable' }; }
@@ -765,7 +766,10 @@ export function activate(ctx) {
       kind: context.view?.kind || 'teaching',
     };
     const mermaidSources = diagramSources(context.view);
-    const scope = lifetime(ctx.signal);
+    // Retire the previous picker before opening another. Stale frames stay visible
+    // and intercept hit tests and clicks until their lifetime is aborted.
+    overlayScope?.abort();
+    const scope = overlayScope = lifetime(ctx.signal);
     const props = {
       title: 'Add to notes',
       background: 'dimmed',
@@ -812,7 +816,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          status.textContent = `v0.1.13 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          status.textContent = `v0.1.14 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
           debug.textContent = `debug · scope=${scopeLabel} found=${rawHits} clicks=${clickCount}`
             + (detectError ? ` · error: ${detectError}` : '')
@@ -820,16 +824,51 @@ export function activate(ctx) {
             + logHint;
           addHandle.update({ disabled: !selected.size });
         };
+        const scroller = document.querySelector('[role="log"] > div[style*="scrollbar-gutter"]')
+          || document.querySelector('[role="log"] > div');
+        const scrollTop = () => scroller?.scrollTop || 0;
+        // Record each region's position once. Scrolling shifts that recorded rect
+        // by the scroll delta, so layout never measures the whole transcript.
+        const prepareRegion = region => {
+          const rect = region.node.getBoundingClientRect?.();
+          region.at = rect
+            ? { top: rect.top, bottom: rect.bottom, scroll: scrollTop() }
+            : { top: 0, bottom: 0, scroll: scrollTop() };
+          return region;
+        };
+        const inView = region => {
+          if (!region.at) prepareRegion(region);
+          const delta = scrollTop() - region.at.scroll;
+          const base = canvasBase || canvas.getBoundingClientRect();
+          const margin = 160;
+          return region.at.bottom - delta >= base.top - margin
+            && region.at.top - delta <= base.bottom + margin;
+        };
         const layout = () => {
           layoutQueued = false;
           if (signal.aborted) return;
           canvasBase = canvas.getBoundingClientRect();
-          const measured = [];
-          for (const [region, box] of boxes) {
-            if (!region.node.isConnected) { box.remove(); boxes.delete(region); selected.delete(region); continue; }
-            measured.push({ region, box, rect: region.node.getBoundingClientRect() });
+          for (let i = regions.length - 1; i >= 0; i--) {
+            const region = regions[i];
+            if (region.node.isConnected) continue;
+            boxes.get(region)?.remove();
+            boxes.delete(region);
+            selected.delete(region);
+            regions.splice(i, 1);
           }
-          for (const { region, box, rect } of measured) {
+          const visible = [];
+          for (const region of regions) {
+            if (!inView(region)) {
+              boxes.get(region)?.remove();
+              boxes.delete(region);
+              continue;
+            }
+            if (!boxes.has(region)) addBox(region);
+            visible.push(region);
+          }
+          const measured = visible.map(region => ({ region, rect: region.node.getBoundingClientRect() }));
+          for (const { region, rect } of measured) {
+            const box = boxes.get(region);
             region.rect = {
               left: rect.left - canvasBase.left, top: rect.top - canvasBase.top,
               right: rect.right - canvasBase.left, bottom: rect.bottom - canvasBase.top,
@@ -839,6 +878,7 @@ export function activate(ctx) {
             box.style.width = `${Math.max(0, region.rect.right - region.rect.left)}px`;
             box.style.height = `${Math.max(0, region.rect.bottom - region.rect.top)}px`;
             box.hidden = !region.rect.right || !region.rect.bottom;
+            box.classList.toggle('is-selected', selected.has(region));
           }
           updateStatus();
         };
@@ -858,6 +898,7 @@ export function activate(ctx) {
           try {
             if (frame) frame.style.pointerEvents = 'none';
             canvas.style.pointerEvents = 'none';
+            canvas.dataset.hitTest = '1';
             for (let y = base.top + 4; y < base.bottom - 4; y += 28) {
               for (let x = base.left + 4; x < base.right - 4; x += 56) {
                 let node = document.elementFromPoint?.(x, y);
@@ -880,6 +921,7 @@ export function activate(ctx) {
           } finally {
             if (frame) frame.style.pointerEvents = oldFrame;
             canvas.style.pointerEvents = oldCanvas;
+            delete canvas.dataset.hitTest;
           }
           return [...found];
         };
@@ -937,12 +979,11 @@ export function activate(ctx) {
             logEvent('hit-test-error', { message: detectError }, 'error');
           }
           rawHits = new Set([...selectorNodes, ...hitNodes]).size;
-          regions = findRegions(...roots, hitNodes);
-          for (const region of regions) addBox(region);
+          regions = findRegions(...roots, hitNodes).map(prepareRegion);
           layout();
           logEvent('detect', {
             sessionId: session.sessionId, scope: scopeLabel, roots: roots.length,
-            selectorNodes: selectorNodes.length, hitNodes: hitNodes.length, rawHits, regions: regions.length,
+            selectorNodes: selectorNodes.length, hitNodes: hitNodes.length, rawHits, regions: regions.length, boxes: boxes.size,
             sample: regions.slice(0, 8).map(r => ({ type: r.type, label: r.label, tag: r.node?.tagName?.toLowerCase?.() || '', text: cleanNodeText(r.node).slice(0, 80) })),
           });
           // The frame can still be sizing when content mounts. Always re-layout,
@@ -1020,7 +1061,10 @@ export function activate(ctx) {
           };
           const overlaps = [];
           for (const [region, box] of boxes) {
-            const nodeRect = region.node.getBoundingClientRect?.();
+            const nodeRect = region.rect && {
+              left: region.rect.left + canvasBase.left, right: region.rect.right + canvasBase.left,
+              top: region.rect.top + canvasBase.top, bottom: region.rect.bottom + canvasBase.top,
+            };
             overlaps.push({ region, box, hit: !!(nodeRect && rectsOverlap(nodeRect, rect)) });
           }
           dragBox.hidden = false;
@@ -1055,8 +1099,6 @@ export function activate(ctx) {
         document.addEventListener('pointerup', finishDrag, { signal });
         document.addEventListener('pointercancel', finishDrag, { signal });
 
-        const scroller = document.querySelector('[role="log"] > div[style*="scrollbar-gutter"]')
-          || document.querySelector('[role="log"] > div');
         canvas.addEventListener('wheel', event => {
           if (!scroller) return;
           event.preventDefault();
@@ -1114,7 +1156,8 @@ export function activate(ctx) {
             region = node ? findRegions([node])[0] : null;
           }
           if (region) {
-            if (!boxes.has(region)) { regions.push(region); addBox(region); }
+            prepareRegion(region);
+            if (!regions.includes(region)) regions.push(region);
             setSelected(region, true);
             clickCount += 1;
             layout();
@@ -1140,7 +1183,7 @@ export function activate(ctx) {
         detect();
       },
     };
-    const options = { signal: ctx.signal };
+    const options = { signal: scope.signal };
     if (context.surfaceTarget) ctx.ui.openSurface(context.surfaceTarget, props, options);
     else ctx.ui.openSurface(props, options);
     void ensureCatalog();
