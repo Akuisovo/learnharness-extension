@@ -82,6 +82,20 @@ test('tableToMarkdown converts a rendered table into a Markdown table', () => {
   assert.match(markdown, /A\\\| B/);
 });
 
+test('tableToMarkdown sizes the separator to the widest row and handles line breaks', () => {
+  const cell = (text, innerText) => ({ textContent: text, innerText });
+  const row = cells => ({ querySelectorAll: selector => selector === 'th,td' ? cells : [] });
+  const header = row([cell('A'), cell('B')]);
+  const data = row([cell('one\ntwo', 'one\ntwo'), cell('2'), cell('3')]);
+  const table = {
+    querySelectorAll: selector => selector === 'tr' ? [header, data] : [],
+    querySelector: selector => selector === 'thead tr' ? header : null,
+  };
+  const lines = tableToMarkdown(table).split('\n');
+  assert.equal(lines[1], '| --- | --- | --- |');
+  assert.equal(lines[2], '| one two | 2 | 3 |');
+});
+
 test('captureFromElement prefers the original diagram source and skips nested matches', () => {
   const source = '```mermaid\ngraph LR; A-->B\n```';
   const node = { matches: selector => selector.includes('md-mermaid'), textContent: 'rendered svg text', outerHTML: '<div></div>' };

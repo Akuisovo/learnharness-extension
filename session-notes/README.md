@@ -37,7 +37,11 @@ by session or by knowledge-web topic/node, and supports full-text search.
   surface registers. Collapsed or off-screen content must be expanded or
   scrolled into view before it can be outlined. Selected regions stay cached
   while scrolling. Whole-session wrapper elements are skipped so a session is
-  no longer detected as one unpickable block.
+  no longer detected as one unpickable block. Scroll-time classification uses
+  `textContent` instead of forced-layout `innerText`, host widget updates only fire
+  when counts change, and diagnostic refresh events are throttled. Picker controls
+  and status lines use the host background colour so they stay readable over the
+  live transcript. Rebuilt tables use a separator sized to the widest row.
 
   **Debug log.** Every action and error is appended to
   `session-notes-debug.log` in the plugin's data directory (next to `notes.json`,

@@ -150,15 +150,20 @@ export function blocksFromView(view) {
 
 /** Convert a rendered host table into Markdown so it renders as a table in a note. */
 export function tableToMarkdown(table) {
-  const rows = [...(table.querySelectorAll?.('tr') ?? [])];
-  if (!rows.length) return table.outerHTML || '';
+  const rows = [...(table.querySelectorAll?.('tr') ?? [])]
+    .filter(row => !row.closest?.('table') || row.closest('table') === table);
+  if (!rows.length) return String(table.textContent || '').replace(/\s+/g, ' ').trim();
   const cells = row => [...(row.querySelectorAll?.('th,td') ?? [])]
-    .map(cell => String(cell.textContent || '').replace(/\s*\n\s*/g, ' ').replace(/\|/g, '\\|').trim());
+    .map(cell => String(cell.innerText ?? cell.textContent ?? '')
+      .replace(/\s*\n\s*/g, ' ').replace(/\u00A0/g, ' ').replace(/\|/g, '\\|').trim());
   const headerRow = table.querySelector?.('thead tr') || rows[0];
   const header = cells(headerRow);
   const width = Math.max(header.length, ...rows.map(row => cells(row).length));
   const pad = row => { const padded = [...row]; while (padded.length < width) padded.push(''); return padded; };
-  const lines = [`| ${pad(header).join(' | ')} |`, `| ${header.map(() => '---').join(' | ')} |`];
+  // The separator must match the widest row, not just the header, or the host
+  // Markdown renderer rejects/mangles tables with uneven header cell counts.
+  const separator = `| ${Array.from({ length: width }, () => '---').join(' | ')} |`;
+  const lines = [`| ${pad(header).join(' | ')} |`, separator];
   for (const row of rows) {
     if (row === headerRow) continue;
     const values = cells(row);
@@ -297,6 +302,12 @@ function cleanNodeText(node) {
   return raw.replace(/\u00A0/g, ' ').trim();
 }
 
+/** Cheap text for region filtering. innerText forces layout per node, which is
+ * too expensive while scrolling a long transcript; textContent is enough here. */
+function cheapNodeText(node) {
+  return String(node?.textContent ?? node?.innerText ?? '').replace(/\u00A0/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 /** Pick the smallest cached region rect containing a point. The host marks the
  * transcript `inert` while the picker is open, so elementsFromPoint cannot see
  * it; cached geometry works regardless of host interaction state. */
@@ -346,9 +357,13 @@ function regionVisible(node) {
   if (node.matches?.('[data-session-find-root], [role="log"], [data-session-body]')) return false;
   const rect = node.getBoundingClientRect?.();
   if (rect && (rect.width < 2 || rect.height < 2)) return false;
-  const style = globalThis.getComputedStyle?.(node);
-  if (style && (style.display === 'none' || style.visibility === 'hidden'
-    || style.visibility === 'collapse' || style.contentVisibility === 'hidden')) return false;
+  if (typeof node.checkVisibility === 'function') {
+    if (!node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
+  } else {
+    const style = globalThis.getComputedStyle?.(node);
+    if (style && (style.display === 'none' || style.visibility === 'hidden'
+      || style.visibility === 'collapse' || style.contentVisibility === 'hidden')) return false;
+  }
   if (node.closest?.('[hidden], [data-session-find-exclude], [role="dialog"], .sr-only')) return false;
   const closed = node.closest?.('details:not([open])');
   if (closed && closed !== node) return false;
@@ -366,7 +381,7 @@ export function findRegions(...scopes) {
   const unique = [...new Set(nodes)]
     .filter(node => !node.closest?.('[data-plugin-session-surface], [data-session-surface-mounts]'))
     .filter(regionVisible)
-    .map(node => ({ node, text: cleanNodeText(node) }))
+    .map(node => ({ node, text: cheapNodeText(node) }))
     .filter(({ node, text }) => {
       if (node.matches?.(HIGH_PRIORITY)) return true;
       // Never select whole-session wrappers or tool/message cards as one block.
@@ -816,6 +831,8 @@ export function activate(ctx) {
         let currentRoots = [], candidateNodes = [], nodeRects = new Map(), visibleNodes = new Set();
         let observer = null, start = null, canvasBase = null, lastDragRect = null, suppressBoxClick = false;
         let candidateCount = 0, clickCount = 0, scopeLabel = '?', detectError = '', notice = '';
+        let lastStatus = '', lastDebug = '', lastDisabled = null;
+        let lastVisibleLogAt = 0, visibleLogTimer = 0;
 
         const setSelected = (region, on) => {
           if (on) selected.add(region);
@@ -823,18 +840,22 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          status.textContent = `v0.1.16 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          const nextStatus = `v0.1.17 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          if (nextStatus !== lastStatus) { status.textContent = nextStatus; lastStatus = nextStatus; }
           const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
-          debug.textContent = `debug · scope=${scopeLabel} candidates=${candidateCount} clicks=${clickCount}`
+          const nextDebug = `debug · scope=${scopeLabel} candidates=${candidateCount} clicks=${clickCount}`
             + (detectError ? ` · error: ${detectError}` : '')
             + (notice ? ` · ${notice}` : '')
             + logHint;
-          addHandle.update({ disabled: !selected.size });
+          if (nextDebug !== lastDebug) { debug.textContent = nextDebug; lastDebug = nextDebug; }
+          const disabled = !selected.size;
+          if (disabled !== lastDisabled) { addHandle.update({ disabled }); lastDisabled = disabled; }
         };
         const scroller = document.querySelector('[role="log"] > div[style*="scrollbar-gutter"]')
           || document.querySelector('[role="log"] > div');
         signal.addEventListener('abort', () => {
           observer?.disconnect();
+          if (visibleLogTimer) globalThis.clearTimeout?.(visibleLogTimer);
           delete document.documentElement.dataset.snPick;
         }, { once: true });
         const trackRegion = region => {
@@ -929,13 +950,21 @@ export function activate(ctx) {
           visibleRegions = [...keep];
           layout();
           const signature = `${visibleNodes.size}:${visibleRegions.length}:${regions.length}`;
-          if (signature !== lastVisibleSignature) {
-            lastVisibleSignature = signature;
+          if (signature === lastVisibleSignature) return;
+          lastVisibleSignature = signature;
+          // Diagonal diagnostics are throttled: logging every scroll tick makes
+          // long sessions janky. User actions and errors are still logged immediately.
+          const flushVisibleLog = () => {
+            if (visibleLogTimer) globalThis.clearTimeout?.(visibleLogTimer);
+            visibleLogTimer = 0;
+            lastVisibleLogAt = Date.now();
             logEvent('visible-refresh', {
               candidates: candidateCount, visible: visibleNodes.size, added: added.length,
               regions: regions.length, boxes: boxes.size, scrollTop: scroller?.scrollTop ?? null,
             });
-          }
+          };
+          if (Date.now() - lastVisibleLogAt > 750) flushVisibleLog();
+          else if (!visibleLogTimer) visibleLogTimer = globalThis.setTimeout?.(flushVisibleLog, 750);
         };
         const observeCandidates = () => {
           observer?.disconnect();
