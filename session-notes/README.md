@@ -50,10 +50,14 @@ by session or by knowledge-web topic/node, and supports full-text search.
   samples, region picks, drags, add/save results and errors as JSON lines — send
   this file when reporting a problem.
 - **Note management.** Every captured block has top-right controls to **delete**,
-  **edit**, **copy**, or move it **up/down**. The note header can **duplicate**
-  the note or **export** it as Markdown. Tags are editable comma-separated
-  fields, and the sorted list can be ordered by newest, oldest, or title; the
-  choice is saved with the other note settings.
+  **edit**, **copy**, **place in note**, or move it **up/down**. **Place in note**
+  inserts a marker at the text cursor; when exported, the real table, code or
+  Mermaid diagram renders at that exact position. The note header can
+  **duplicate** the note or **export** it. Export opens a rendered preview and a
+  Markdown source: choose **Print / Save PDF** to save the preview as a PDF, or
+  **Copy Markdown** for the source. Tags are editable comma-separated fields,
+  and the sorted list can be ordered by newest, oldest, or title; the choice is
+  saved with the other note settings.
 - **Organisation.** Switch between **By session**, **By topic**, and **By
   knowledge node**. Topics can be typed (with suggestions from the knowledge
   web's clusters); nodes are chosen with the native knowledge picker and map to

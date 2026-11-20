@@ -17,6 +17,8 @@ const upIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strok
 const downIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg>';
 const exportIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M4 14v5h16v-5"/></svg>';
 const duplicateIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>';
+const printIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 8V3h10v5"/><path d="M7 17H5a2 2 0 0 1-2-2v-4a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v4a2 2 0 0 1-2 2h-2"/><rect x="7" y="14" width="10" height="7" rx="1"/></svg>';
+const placeIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
 
 /** Combine caller lifetimes so every UI widget is scoped to the shortest owner. */
 function lifetime(...parents) {
@@ -256,7 +258,8 @@ export function previewBlock(block) {
   return value.slice(0, 220) || (block?.caption || block?.type || 'Empty block');
 }
 
-/** Portable Markdown export for a note and its captured blocks. */
+/** Portable Markdown export for a note and its captured blocks. A `[[block:id]]`
+ * marker in the note text places that block inline, preserving the author's layout. */
 export function noteToMarkdown(note) {
   const lines = [`# ${note?.title || 'Untitled note'}`, ''];
   const metadata = [
@@ -267,14 +270,24 @@ export function noteToMarkdown(note) {
   ].filter(([, value]) => value);
   for (const [label, value] of metadata) lines.push(`- **${label}:** ${value}`);
   if (metadata.length) lines.push('');
-  if (String(note?.text || '').trim()) lines.push(String(note.text).trim(), '');
+
   const blocks = note?.blocks || [];
-  if (blocks.length) {
+  const embedded = new Set();
+  const body = String(note?.text || '').replace(/\[\[block:([^\]\s]+)\]\]/g, (match, id) => {
+    const block = blocks.find(row => row.id === id);
+    if (!block) return match;
+    embedded.add(id);
+    return `\n\n${String(block.markdown || '').trim()}\n\n`;
+  }).trim();
+  if (body) lines.push(body, '');
+
+  const loose = blocks.map((block, index) => ({ block, index })).filter(({ block }) => !embedded.has(block.id));
+  if (loose.length) {
     lines.push('## Captured blocks', '');
-    blocks.forEach((block, index) => {
+    for (const { block, index } of loose) {
       lines.push(`### ${index + 1}. ${block?.caption || block?.type || 'Block'}`, '');
       lines.push(String(block?.markdown || '').trim(), '');
-    });
+    }
   }
   return lines.join('\n').trim() + '\n';
 }
@@ -890,7 +903,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          const nextStatus = `v0.1.18 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          const nextStatus = `v0.1.19 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           if (nextStatus !== lastStatus) { status.textContent = nextStatus; lastStatus = nextStatus; }
           const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
           const nextDebug = `debug · scope=${scopeLabel} candidates=${candidateCount} clicks=${clickCount}`
@@ -1408,24 +1421,41 @@ export function activate(ctx) {
           content: (host, dialogSignal) => {
             const pane = el('div', 'sn-settings');
             host.append(pane);
-            pane.append(el('h3', 'sn-title', 'Export as Markdown'));
-            const area = el('textarea', 'sn-textarea sn-export-text', markdown);
-            area.readOnly = true;
-            area.setAttribute('aria-label', 'Markdown export');
-            pane.append(area);
+            pane.append(el('h3', 'sn-title', 'Export note'));
+            pane.append(el('p', 'sn-hint', 'PDF export uses the rendered preview below. Choose “Print / Save PDF” and select “Save as PDF”; diagrams, tables and text keep the order shown here.'));
             const actions = el('div', 'sn-toolbar');
             pane.append(actions);
             const dialogError = el('span', 'sn-error');
             dialogError.hidden = true;
-            button(actions, 'Copy all', async () => {
+            button(actions, 'Print / Save PDF', async () => {
+              try {
+                if (typeof globalThis.print !== 'function') throw new Error('Printing is unavailable in this host. Use Copy Markdown instead.');
+                logEvent('note-action', { action: 'export-pdf', noteId: noteRecord.id });
+                try { await globalThis.document?.fonts?.ready; } catch { /* printing still works without fonts */ }
+                globalThis.print();
+                dialogError.hidden = true;
+              } catch (cause) { dialogError.hidden = false; dialogError.textContent = message(cause); }
+            }, dialogSignal, { icon: printIcon, variant: 'default' });
+            button(actions, 'Copy Markdown', async () => {
               try {
                 await copyToClipboard(markdown);
                 dialogError.hidden = true;
                 logEvent('note-action', { action: 'export-copy', noteId: noteRecord.id });
               } catch (cause) { dialogError.hidden = false; dialogError.textContent = message(cause); }
             }, dialogSignal, { icon: copyIcon });
-            pane.append(dialogError);
             button(actions, 'Close', () => dialog.dispose(), dialogSignal);
+            pane.append(dialogError);
+
+            pane.append(el('h4', 'sn-label', 'PDF preview'));
+            const preview = el('div', 'sn-print-root');
+            pane.append(preview);
+            markdown(preview, markdown, dialogSignal);
+
+            pane.append(el('h4', 'sn-label', 'Markdown source'));
+            const area = el('textarea', 'sn-textarea sn-export-text', markdown);
+            area.readOnly = true;
+            area.setAttribute('aria-label', 'Markdown export');
+            pane.append(area);
           },
         }, { signal: viewSignal });
       };
@@ -1520,7 +1550,8 @@ export function activate(ctx) {
       const textArea = el('textarea', 'sn-textarea');
       textArea.value = noteRecord.text || '';
       textArea.placeholder = 'Write your note here…';
-      textField.append(el('span', 'sn-label', 'Note'), textArea);
+      textField.append(el('span', 'sn-label', 'Note (Markdown; use Place in note for block positions)'), textArea);
+      textField.append(el('span', 'sn-hint', 'After placing a block, click Save; PDF and Markdown exports follow this order.'));
       detailPane.append(textField);
 
       const actions = el('div', 'sn-toolbar');
@@ -1610,6 +1641,21 @@ export function activate(ctx) {
           iconButton('Move block down', downIcon, () => runBlockOperation('move-block', {
             id: noteRecord.id, blockId: block.id, direction: 'down',
           }), { disabled: index === noteRecord.blocks.length - 1 });
+          iconButton('Place in note', placeIcon, () => {
+            const token = `[[block:${block.id}]]`;
+            const start = textArea.selectionStart ?? textArea.value.length;
+            const end = textArea.selectionEnd ?? start;
+            const before = textArea.value.slice(0, start);
+            const after = textArea.value.slice(end);
+            const lead = before && !/\n\n$/.test(before) ? '\n\n' : '';
+            const trail = after && !/^\n\n/.test(after) ? '\n\n' : '';
+            textArea.value = `${before}${lead}${token}${trail}${after}`;
+            const caret = before.length + lead.length + token.length;
+            textArea.focus();
+            textArea.setSelectionRange(caret, caret);
+            logEvent('note-action', { action: 'place-block-in-note', noteId: noteRecord.id, blockId: block.id });
+            clearReport();
+          });
           iconButton('Edit block', editIcon, openEditDialog);
           iconButton('Copy block', copyIcon, async () => {
             try {

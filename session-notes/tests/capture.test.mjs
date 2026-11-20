@@ -116,6 +116,24 @@ test('noteToMarkdown exports note metadata, prose and captured blocks', () => {
   assert.match(markdown, /```mermaid/);
 });
 
+test('noteToMarkdown expands placed blocks at their note-text positions', () => {
+  const markdown = noteToMarkdown({
+    title: 'Positioned',
+    text: 'Intro text.\n\n[[block:b2]]\n\nConclusion text.',
+    blocks: [
+      { id: 'b1', type: 'text', caption: 'Loose', markdown: 'unused block' },
+      { id: 'b2', type: 'diagram', caption: 'Map', markdown: '```mermaid\ngraph LR; A-->B\n```' },
+    ],
+  });
+  const intro = markdown.indexOf('Intro text.');
+  const diagram = markdown.indexOf('graph LR; A-->B');
+  const conclusion = markdown.indexOf('Conclusion text.');
+  assert.ok(intro >= 0 && diagram > intro && conclusion > diagram);
+  assert.ok(!markdown.includes('[[block:'));
+  assert.equal(markdown.split('graph LR; A-->B').length - 1, 1);
+  assert.match(markdown, /## Captured blocks[\s\S]*unused block/);
+});
+
 test('captureFromElement prefers the original diagram source and skips nested matches', () => {
   const source = '```mermaid\ngraph LR; A-->B\n```';
   const node = { matches: selector => selector.includes('md-mermaid'), textContent: 'rendered svg text', outerHTML: '<div></div>' };

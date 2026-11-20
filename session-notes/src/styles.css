@@ -129,6 +129,17 @@
 .sn-textarea { min-height: 6rem; resize: vertical; }
 .sn-export-text { min-height: 14rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; }
 
+.sn-print-root {
+  max-height: 60vh;
+  overflow: auto;
+  padding: 0.75rem;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  border-radius: 0.45rem;
+  background: var(--background, inherit);
+}
+
+.sn-print-root .sn-markdown { overflow: visible; }
+
 .sn-blocks {
   display: flex;
   flex-direction: column;
@@ -450,3 +461,56 @@ html[data-sn-pick] .sn-region-box { pointer-events: none; }
 .sn-pick-code { background: rgba(120, 190, 140, 0.18); }
 
 .sn-settings { display: flex; flex-direction: column; gap: 0.75rem; max-width: 34rem; }
+
+/* PDF export: print only the rendered note preview. */
+@page { margin: 14mm; }
+
+@media print {
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  body * { visibility: hidden !important; }
+
+  .sn-print-root,
+  .sn-print-root * {
+    visibility: visible !important;
+  }
+
+  .sn-print-root {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 100% !important;
+    max-height: none !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: #fff !important;
+    color: #000 !important;
+    box-shadow: none !important;
+  }
+
+  .sn-print-root h1,
+  .sn-print-root h2,
+  .sn-print-root h3,
+  .sn-print-root h4,
+  .sn-print-root pre,
+  .sn-print-root table,
+  .sn-print-root svg,
+  .sn-print-root img {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .sn-print-root pre,
+  .sn-print-root code {
+    white-space: pre-wrap !important;
+    overflow-wrap: anywhere !important;
+  }
+
+  .sn-print-root a { color: #000 !important; text-decoration: none !important; }
+}
