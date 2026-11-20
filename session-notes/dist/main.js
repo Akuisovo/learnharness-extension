@@ -317,6 +317,23 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 }[char]));
 
+const clampNum = (value, min, max, fallback) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? Math.min(max, Math.max(min, Math.round(num))) : fallback;
+};
+
+function normaliseElementStyles(input) {
+  if (!input || typeof input !== 'object') return {};
+  const out = {};
+  for (const [id, raw] of Object.entries(input)) {
+    if (!id || !raw || typeof raw !== 'object') continue;
+    const width = clampNum(raw.width, 40, 150, 100);
+    const fontSize = clampNum(raw.fontSize, 70, 150, 100);
+    if (width !== 100 || fontSize !== 100) out[id] = { width, fontSize };
+  }
+  return out;
+}
+
 /** Normalise PDF export layout options to safe, printable values. */
 export function normalisePdfOptions(input = {}) {
   const marginMm = [8, 14, 20].includes(Number(input.marginMm)) ? Number(input.marginMm) : 14;
@@ -325,23 +342,55 @@ export function normalisePdfOptions(input = {}) {
   const maxElementHeight = [0, 110, 160, 220, 300].includes(Number(input.maxElementHeight))
     ? Number(input.maxElementHeight) : 160;
   const keepTogether = input.keepTogether === true;
-  return { marginMm, orientation, scale, maxElementHeight, keepTogether };
+  const bodyText = clampNum(input.bodyText, 70, 150, 100);
+  const titleText = clampNum(input.titleText, 70, 150, 100);
+  const headingText = clampNum(input.headingText, 70, 150, 100);
+  const elementStyles = normaliseElementStyles(input.elementStyles);
+  return { marginMm, orientation, scale, maxElementHeight, keepTogether, bodyText, titleText, headingText, elementStyles };
+}
+
+function elementStyleCss(elementStyles = {}, important = false) {
+  const bang = important ? ' !important' : '';
+  const rules = [];
+  for (const [id, style] of Object.entries(normaliseElementStyles(elementStyles))) {
+    const safeId = String(id).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const selector = `.sn-print-root [data-sn-pdf-el="${safeId}"]`;
+    const props = [`max-width: 100%${bang}`, `box-sizing: border-box${bang}`];
+    if (style.width !== 100) props.push(`width: ${style.width}%${bang}`, `margin-left: auto${bang}`, `margin-right: auto${bang}`);
+    if (style.fontSize !== 100) props.push(`font-size: ${style.fontSize}%${bang}`);
+    rules.push(`${selector} { ${props.join('; ')}; }`);
+    if (style.width !== 100) {
+      rules.push(`${selector} > img, ${selector} > svg, ${selector} > canvas, ${selector} > table, ${selector} > pre, ${selector} img, ${selector} svg, ${selector} canvas, ${selector} table { max-width: 100%${bang}; height: auto${bang}; }`);
+    }
+  }
+  return rules.join('\n');
 }
 
 function pdfLayoutCss(options = {}, important = false) {
-  const { marginMm, orientation, scale, maxElementHeight, keepTogether } = normalisePdfOptions(options);
+  const { marginMm, orientation, scale, maxElementHeight, keepTogether, bodyText, titleText, headingText, elementStyles } = normalisePdfOptions(options);
   const bang = important ? ' !important' : '';
   const breakValue = keepTogether ? 'avoid' : 'auto';
+  const baseFont = scale * bodyText / 100;
   const sizeRule = important
     ? `.sn-print-root img, .sn-print-root svg, .sn-print-root canvas { max-width: 100%${bang}; height: auto${bang};${maxElementHeight ? ` max-height: ${maxElementHeight}mm${bang};` : ''} }`
     : `.sn-print-root img, .sn-print-root svg, .sn-print-root canvas { max-width: 100%; height: auto;${maxElementHeight ? ` max-height: ${maxElementHeight}mm;` : ''} }`;
-  return [
+  const em = value => String(Math.round(value * 1000) / 1000);
+  const lines = [
     `@page { margin: ${marginMm}mm; size: A4 ${orientation}; }`,
-    `.sn-print-root { font-size: ${scale}%${bang}; }`,
+    `.sn-print-root { font-size: ${baseFont}%${bang}; }`,
     `.sn-print-root table { max-width: 100%${bang}; }`,
     sizeRule,
-    `.sn-print-root h1, .sn-print-root h2, .sn-print-root h3, .sn-print-root h4, .sn-print-root pre, .sn-print-root table, .sn-print-root svg, .sn-print-root img, .sn-print-root .sn-capture-block { break-inside: ${breakValue}${bang}; page-break-inside: ${breakValue}${bang}; }`,
-  ].join('\n');
+    `.sn-print-root h1, .sn-print-root h2, .sn-print-root h3, .sn-print-root h4, .sn-print-root pre, .sn-print-root table, .sn-print-root svg, .sn-print-root img, .sn-print-root figure, .sn-print-root blockquote, .sn-print-root .sn-capture-block, .sn-print-root [data-sn-pdf-el] { break-inside: ${breakValue}${bang}; page-break-inside: ${breakValue}${bang}; }`,
+  ];
+  if (titleText !== 100) lines.push(`.sn-print-root h1 { font-size: ${em(2 * titleText / 100)}em${bang}; }`);
+  if (headingText !== 100) {
+    lines.push(`.sn-print-root h2 { font-size: ${em(1.5 * headingText / 100)}em${bang}; }`);
+    lines.push(`.sn-print-root h3 { font-size: ${em(1.25 * headingText / 100)}em${bang}; }`);
+    lines.push(`.sn-print-root h4, .sn-print-root h5, .sn-print-root h6 { font-size: ${em(1.1 * headingText / 100)}em${bang}; }`);
+  }
+  const elementCss = elementStyleCss(elementStyles, important);
+  if (elementCss) lines.push(elementCss);
+  return lines.join('\n');
 }
 
 function buildPrintCss(options = {}) {
@@ -411,11 +460,16 @@ function collectStyles() {
 function printRenderedNote(fragment, title, options = {}) {
   const doc = globalThis.document;
   if (!doc?.body || typeof doc.createElement !== 'function') throw new Error('Printing is unavailable in this host.');
+  const clone = fragment.cloneNode(true);
+  clone.querySelectorAll?.('.is-sn-pdf-selected, [data-sn-pdf-selected]').forEach(node => {
+    node.classList?.remove('is-sn-pdf-selected');
+    node.removeAttribute?.('data-sn-pdf-selected');
+  });
   const frame = doc.createElement('iframe');
   frame.setAttribute('aria-hidden', 'true');
   frame.setAttribute('title', 'Session Notes PDF print frame');
   frame.style.cssText = 'position:fixed;left:-10000px;top:0;width:1200px;height:1600px;border:0;pointer-events:none;';
-  frame.srcdoc = printableDocumentHtml(fragment.innerHTML, title, collectStyles(), options);
+  frame.srcdoc = printableDocumentHtml(clone.innerHTML, title, collectStyles(), options);
   let done = false;
   const cleanup = () => {
     if (done) return;
@@ -1024,7 +1078,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          const nextStatus = `v0.1.22 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          const nextStatus = `v0.1.23 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           if (nextStatus !== lastStatus) { status.textContent = nextStatus; lastStatus = nextStatus; }
           const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
           const nextDebug = `debug · scope=${scopeLabel} candidates=${candidateCount} clicks=${clickCount}`
@@ -1543,7 +1597,7 @@ export function activate(ctx) {
             const pane = el('div', 'sn-settings');
             host.append(pane);
             pane.append(el('h3', 'sn-title', 'Export note'));
-            pane.append(el('p', 'sn-hint', 'Adjust the PDF layout, review the preview, then choose “Print / Save PDF” and select “Save as PDF”. Diagrams, tables and text follow the note order.'));
+            pane.append(el('p', 'sn-hint', 'Adjust global text/layout and click elements in the preview to resize them individually, then choose “Print / Save PDF”.'));
 
             const pdfOptions = normalisePdfOptions({});
             const actions = el('div', 'sn-toolbar');
@@ -1572,9 +1626,34 @@ export function activate(ctx) {
             button(actions, 'Close', () => dialog.dispose(), dialogSignal);
             pane.append(dialogError);
 
-            pane.append(el('h4', 'sn-label', 'PDF layout'));
+            const addRange = (parent, labelText, key, min, max, step, suffix = '%') => {
+              const field = el('label', 'sn-field sn-pdf-field');
+              const head = el('div', 'sn-pdf-range-head');
+              const value = el('span', 'sn-pdf-range-value', `${pdfOptions[key]}${suffix}`);
+              head.append(el('span', 'sn-label', labelText), value);
+              const input = el('input', 'sn-pdf-range');
+              input.type = 'range';
+              input.min = String(min); input.max = String(max); input.step = String(step);
+              input.value = String(pdfOptions[key]);
+              input.addEventListener('input', () => {
+                pdfOptions[key] = Number(input.value);
+                Object.assign(pdfOptions, normalisePdfOptions(pdfOptions));
+                value.textContent = `${pdfOptions[key]}${suffix}`;
+                applyPreviewPdfOptions(preview, pdfOptions);
+              }, { signal: dialogSignal });
+              field.append(head, input);
+              parent.append(field);
+              return input;
+            };
+
+            pane.append(el('h4', 'sn-label', 'Global text & layout'));
             const layout = el('div', 'sn-pdf-options');
             pane.append(layout);
+            addRange(layout, 'Body text size', 'bodyText', 70, 150, 5);
+            addRange(layout, 'Title size (H1)', 'titleText', 70, 150, 5);
+            addRange(layout, 'Heading size (H2–H4)', 'headingText', 70, 150, 5);
+            addRange(layout, 'Overall scale', 'scale', 80, 125, 5);
+
             const addSelect = (labelText, values, key) => {
               const field = el('label', 'sn-field sn-pdf-field');
               field.append(el('span', 'sn-label', labelText));
@@ -1596,15 +1675,154 @@ export function activate(ctx) {
             };
             addSelect('Margin', [['Compact (8mm)', 8], ['Normal (14mm)', 14], ['Wide (20mm)', 20]], 'marginMm');
             addSelect('Orientation', [['Portrait', 'portrait'], ['Landscape', 'landscape']], 'orientation');
-            addSelect('Scale', [['80%', 80], ['90%', 90], ['100%', 100], ['110%', 110], ['125%', 125]], 'scale');
             addSelect('Max diagram / image height', [['No limit', 0], ['Small (110mm)', 110], ['Medium (160mm)', 160], ['Large (220mm)', 220], ['Extra large (300mm)', 300]], 'maxElementHeight');
             addSelect('Keep elements together', [['No (allow page breaks)', false], ['Yes (avoid splitting)', true]], 'keepTogether');
 
+            pane.append(el('h4', 'sn-label', 'Individual elements'));
+            pane.append(el('p', 'sn-hint', 'Click an element in the preview (or pick from the list) to change its width and text size.'));
+            const elementList = el('div', 'sn-pdf-element-list');
+            pane.append(elementList);
+            const elementEditor = el('div', 'sn-pdf-element-editor');
+            pane.append(elementEditor);
+
             pane.append(el('h4', 'sn-label', 'PDF preview'));
-            const preview = el('div', 'sn-print-root');
+            const preview = el('div', 'sn-print-root sn-pdf-interactive');
             pane.append(preview);
             renderMarkdown(preview, markdown, dialogSignal);
+
+            const elementMeta = new Map();
+            let selectedElementId = null;
+            const pdfContentRoot = () => {
+              let root = preview.querySelector('.sn-markdown') || preview;
+              for (let i = 0; i < 4; i++) {
+                const kids = Array.from(root.children || []).filter(n => n.nodeType === 1 && n.tagName !== 'STYLE' && !n.hasAttribute('data-sn-pdf-preview-style'));
+                if (kids.length === 1 && !/^(P|H1|H2|H3|H4|H5|H6|PRE|TABLE|UL|OL|BLOCKQUOTE|FIGURE|HR|IMG|SVG)$/i.test(kids[0].tagName)) root = kids[0];
+                else break;
+              }
+              return root;
+            };
+            const selectElement = id => {
+              selectedElementId = id;
+              preview.querySelectorAll('[data-sn-pdf-el].is-sn-pdf-selected').forEach(n => n.classList.remove('is-sn-pdf-selected'));
+              if (id) preview.querySelector(`[data-sn-pdf-el="${id}"]`)?.classList.add('is-sn-pdf-selected');
+              elementList.querySelectorAll('[data-sn-pdf-pick]').forEach(btn => {
+                btn.classList.toggle('is-active', btn.getAttribute('data-sn-pdf-pick') === id);
+              });
+              renderElementEditor();
+            };
+            const renderElementEditor = () => {
+              elementEditor.replaceChildren();
+              const meta = selectedElementId ? elementMeta.get(selectedElementId) : null;
+              if (!meta) {
+                elementEditor.append(el('span', 'sn-hint', 'No element selected.'));
+                return;
+              }
+              const current = (pdfOptions.elementStyles || {})[selectedElementId] || { width: 100, fontSize: 100 };
+              elementEditor.append(el('div', 'sn-pdf-selected-label', meta.label));
+              const controls = el('div', 'sn-pdf-options');
+              const addElRange = (labelText, prop, min, max) => {
+                const field = el('label', 'sn-field sn-pdf-field');
+                const head = el('div', 'sn-pdf-range-head');
+                const value = el('span', 'sn-pdf-range-value', `${current[prop] || 100}%`);
+                head.append(el('span', 'sn-label', labelText), value);
+                const input = el('input', 'sn-pdf-range');
+                input.type = 'range'; input.min = String(min); input.max = String(max); input.step = '5';
+                input.value = String(current[prop] || 100);
+                input.addEventListener('input', () => {
+                  const styles = { ...(pdfOptions.elementStyles || {}) };
+                  const next = { ...(styles[selectedElementId] || { width: 100, fontSize: 100 }), [prop]: Number(input.value) };
+                  if (next.width === 100 && next.fontSize === 100) delete styles[selectedElementId]; else styles[selectedElementId] = next;
+                  pdfOptions.elementStyles = styles;
+                  Object.assign(pdfOptions, normalisePdfOptions(pdfOptions));
+                  value.textContent = `${(pdfOptions.elementStyles[selectedElementId] || { [prop]: 100 })[prop] || 100}%`;
+                  applyPreviewPdfOptions(preview, pdfOptions);
+                  renderElementList();
+                }, { signal: dialogSignal });
+                field.append(head, input);
+                controls.append(field);
+              };
+              addElRange('Width', 'width', 40, 150);
+              addElRange('Text size', 'fontSize', 70, 150);
+              elementEditor.append(controls);
+              const resetRow = el('div', 'sn-toolbar');
+              elementEditor.append(resetRow);
+              button(resetRow, 'Reset element', () => {
+                const styles = { ...(pdfOptions.elementStyles || {}) };
+                delete styles[selectedElementId];
+                pdfOptions.elementStyles = styles;
+                applyPreviewPdfOptions(preview, pdfOptions);
+                renderElementEditor();
+                renderElementList();
+              }, dialogSignal);
+            };
+            const renderElementList = () => {
+              elementList.replaceChildren();
+              if (!elementMeta.size) {
+                elementList.append(el('span', 'sn-hint', 'No adjustable elements detected yet.'));
+                return;
+              }
+              for (const [id, meta] of elementMeta.entries()) {
+                const hasCustom = !!(pdfOptions.elementStyles || {})[id];
+                const btn = el('button', 'sn-pdf-element-pick' + (id === selectedElementId ? ' is-active' : '') + (hasCustom ? ' is-custom' : ''));
+                btn.type = 'button';
+                btn.setAttribute('data-sn-pdf-pick', id);
+                btn.textContent = (hasCustom ? '• ' : '') + meta.label;
+                btn.title = meta.label;
+                btn.addEventListener('click', () => {
+                  selectElement(id);
+                  meta.node?.scrollIntoView?.({ block: 'nearest' });
+                }, { signal: dialogSignal });
+                elementList.append(btn);
+              }
+            };
+            const tagPdfElements = () => {
+              const root = pdfContentRoot();
+              if (!root) return;
+              const nodes = Array.from(root.children || []).filter(n => n.nodeType === 1 && n.tagName !== 'STYLE' && !n.hasAttribute('data-sn-pdf-preview-style'));
+              elementMeta.clear();
+              nodes.forEach((node, index) => {
+                const id = `el-${index + 1}`;
+                node.setAttribute('data-sn-pdf-el', id);
+                if (!node.__snPdfPickBound) {
+                  node.__snPdfPickBound = true;
+                  node.addEventListener('click', event => {
+                    event.preventDefault?.();
+                    event.stopPropagation?.();
+                    selectElement(id);
+                  }, { signal: dialogSignal });
+                }
+                const text = (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+                const tag = node.tagName.toLowerCase();
+                let label = tag.toUpperCase();
+                if (/^h[1-6]$/.test(tag)) label = `${tag.toUpperCase()}: ${text.slice(0, 36) || 'Heading'}`;
+                else if (tag === 'table' || node.querySelector('table')) label = `Table: ${text.slice(0, 32) || 'table'}`;
+                else if (tag === 'pre' || node.querySelector('pre,code')) label = `Code: ${text.slice(0, 32) || 'block'}`;
+                else if (node.querySelector('svg,canvas,[data-testid*="mermaid"],[class*="mermaid"]') || tag === 'svg' || tag === 'figure') label = `Diagram: ${text.slice(0, 28) || 'visual'}`;
+                else if (tag === 'img' || node.querySelector('img')) label = `Image: ${text.slice(0, 28) || 'image'}`;
+                else if (text) label = `${tag === 'p' ? 'Text' : tag === 'li' ? 'Item' : 'Block'}: ${text.slice(0, 36)}`;
+                elementMeta.set(id, { id, label, node });
+              });
+              // drop styles for elements that no longer exist
+              const styles = { ...(pdfOptions.elementStyles || {}) };
+              let changed = false;
+              for (const id of Object.keys(styles)) if (!elementMeta.has(id)) { delete styles[id]; changed = true; }
+              if (changed) { pdfOptions.elementStyles = styles; Object.assign(pdfOptions, normalisePdfOptions(pdfOptions)); }
+              if (selectedElementId && !elementMeta.has(selectedElementId)) selectedElementId = null;
+              renderElementList();
+              renderElementEditor();
+              applyPreviewPdfOptions(preview, pdfOptions);
+            };
+
             applyPreviewPdfOptions(preview, pdfOptions);
+            renderElementEditor();
+            renderElementList();
+            const scheduleTag = (delay) => setTimeout(() => { if (!dialogSignal.aborted) tagPdfElements(); }, delay);
+            scheduleTag(0); scheduleTag(120); scheduleTag(450); scheduleTag(1200);
+            try {
+              const observer = new MutationObserver(() => scheduleTag(80));
+              observer.observe(preview, { childList: true, subtree: true });
+              dialogSignal.addEventListener('abort', () => observer.disconnect(), { once: true });
+            } catch {}
 
             pane.append(el('h4', 'sn-label', 'Markdown source'));
             const area = el('textarea', 'sn-textarea sn-export-text', markdown);

@@ -147,23 +147,37 @@ test('printableDocumentHtml builds a standalone print document with the rendered
 test('normalisePdfOptions clamps to supported PDF layout values', () => {
   assert.deepEqual(normalisePdfOptions(), {
     marginMm: 14, orientation: 'portrait', scale: 100, maxElementHeight: 160, keepTogether: false,
+    bodyText: 100, titleText: 100, headingText: 100, elementStyles: {},
   });
-  assert.deepEqual(normalisePdfOptions({ marginMm: 8, orientation: 'landscape', scale: 80, maxElementHeight: 0, keepTogether: true }), {
+  assert.deepEqual(normalisePdfOptions({ marginMm: 8, orientation: 'landscape', scale: 80, maxElementHeight: 0, keepTogether: true, bodyText: 90, titleText: 125, headingText: 110, elementStyles: { a: { width: 80, fontSize: 90 } } }), {
     marginMm: 8, orientation: 'landscape', scale: 80, maxElementHeight: 0, keepTogether: true,
+    bodyText: 90, titleText: 125, headingText: 110, elementStyles: { a: { width: 80, fontSize: 90 } },
   });
   assert.equal(normalisePdfOptions({ marginMm: 99, scale: 73, maxElementHeight: 42 }).marginMm, 14);
   assert.equal(normalisePdfOptions({ marginMm: 99, scale: 73, maxElementHeight: 42 }).scale, 100);
   assert.equal(normalisePdfOptions({ marginMm: 99, scale: 73, maxElementHeight: 42 }).maxElementHeight, 160);
+  assert.equal(normalisePdfOptions({ bodyText: 999 }).bodyText, 150);
+  assert.deepEqual(normalisePdfOptions({ elementStyles: { x: { width: 33, fontSize: 100 } } }).elementStyles, { x: { width: 40, fontSize: 100 } });
+  assert.deepEqual(normalisePdfOptions({ elementStyles: { x: { width: 100, fontSize: 100 } } }).elementStyles, {});
 });
 
 test('printableDocumentHtml applies PDF layout options', () => {
   const html = printableDocumentHtml('<p>Body</p>', 'Note', '', {
     marginMm: 8, orientation: 'landscape', scale: 90, maxElementHeight: 160, keepTogether: false,
+    bodyText: 110, titleText: 125, headingText: 90,
+    elementStyles: { 'el-1': { width: 80, fontSize: 90 } },
   });
   assert.match(html, /@page \{ margin: 8mm; size: A4 landscape; \}/);
-  assert.match(html, /\.sn-print-root \{ font-size: 90% !important; \}/);
+  assert.match(html, /\.sn-print-root \{ font-size: 99% !important; \}/);
   assert.match(html, /max-height: 160mm !important;/);
   assert.match(html, /break-inside: auto !important;/);
+  assert.match(html, /\.sn-print-root h1 \{ font-size: 2\.5em !important; \}/);
+  assert.match(html, /\.sn-print-root h2 \{ font-size: 1\.35em !important; \}/);
+  assert.match(html, /\.sn-print-root h3 \{ font-size: 1\.125em !important; \}/);
+  assert.match(html, /\.sn-print-root h4, \.sn-print-root h5, \.sn-print-root h6 \{ font-size: 0\.99em !important; \}/);
+  assert.match(html, /\[data-sn-pdf-el="el-1"\]/);
+  assert.match(html, /width: 80% !important/);
+  assert.match(html, /font-size: 90% !important/);
 });
 
 test('captureFromElement prefers the original diagram source and skips nested matches', () => {

@@ -53,11 +53,13 @@ by session or by knowledge-web topic/node, and supports full-text search.
   **edit**, **copy**, **place in note**, or move it **up/down**. **Place in note**
   inserts a marker at the text cursor; when exported, the real table, code or
   Mermaid diagram renders at that exact position. The note header can
-  **duplicate** the note or **export** it. Export opens a rendered preview, a
-  simple **PDF layout** panel (margin, orientation, scale, max diagram/image
-  height, keep-elements-together) with live preview, and the Markdown source:
-  choose **Print / Save PDF** to print a detached copy of that preview and save
-  it as a PDF, or **Copy Markdown** for the source. Tags are editable comma-separated fields,
+  **duplicate** the note or **export** it. Export opens a rendered preview with
+  an interactive **PDF layout** panel: set global **body text**, **title (H1)**,
+  **heading (H2–H4)** sizes, scale/margins/orientation and diagram height, then
+  **click elements in the preview** (or pick from the list) to adjust each
+  element’s **width** and **text size** individually. The live preview matches
+  the detached print document: choose **Print / Save PDF** to save it as a PDF,
+  or **Copy Markdown** for the source. Tags are editable comma-separated fields,
   and the sorted list can be ordered by newest, oldest, or title; the choice is
   saved with the other note settings.
 - **Organisation.** Switch between **By session**, **By topic**, and **By

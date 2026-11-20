@@ -138,6 +138,83 @@
 
 .sn-pdf-field { gap: 0.2rem; }
 
+.sn-pdf-range-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.sn-pdf-range-value {
+  font-size: 0.72rem;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+.sn-pdf-range {
+  width: 100%;
+  margin: 0.15rem 0 0;
+  accent-color: var(--accent, #6ea8fe);
+}
+
+.sn-pdf-element-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-height: 8rem;
+  overflow: auto;
+  padding: 0.1rem 0;
+}
+
+.sn-pdf-element-pick {
+  max-width: 100%;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+  border-radius: 999px;
+  background: var(--background, transparent);
+  color: inherit;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sn-pdf-element-pick:hover { background: var(--muted-bg, rgba(127, 127, 127, 0.15)); }
+.sn-pdf-element-pick.is-active { border-color: var(--accent, #6ea8fe); background: rgba(110, 168, 254, 0.15); }
+.sn-pdf-element-pick.is-custom { font-weight: 600; }
+
+.sn-pdf-element-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  border-radius: 0.45rem;
+  background: var(--muted-bg, rgba(127, 127, 127, 0.06));
+}
+
+.sn-pdf-selected-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.sn-pdf-interactive [data-sn-pdf-el] {
+  cursor: pointer;
+  border-radius: 0.25rem;
+  transition: box-shadow 120ms ease;
+}
+
+.sn-pdf-interactive [data-sn-pdf-el]:hover {
+  box-shadow: 0 0 0 2px rgba(110, 168, 254, 0.35);
+}
+
+.sn-pdf-interactive [data-sn-pdf-el].is-sn-pdf-selected {
+  box-shadow: 0 0 0 2px rgba(110, 168, 254, 0.85);
+}
+
 .sn-print-root {
   max-height: 60vh;
   overflow: auto;
