@@ -297,26 +297,39 @@ function cleanNodeText(node) {
   return raw.replace(/\u00A0/g, ' ').trim();
 }
 
+/** Find the smallest transcript region at a point from the browser's hit-test
+ * stack. Querying every descendant of a whole-session wrapper is too expensive
+ * in settled sessions with thousands of nodes. */
+function regionAtPoint(point) {
+  if (!point || typeof document === 'undefined' || typeof document.elementsFromPoint !== 'function') return null;
+  let best = null, bestPriority = -1, bestArea = Infinity, wrapper = null;
+  for (const node of document.elementsFromPoint(point.clientX, point.clientY)) {
+    let probe = node;
+    while (probe && probe !== document.body) {
+      if (probe.matches?.(REGION_SELECTOR) && !probe.closest?.('[data-plugin-session-surface]')) {
+        const rect = probe.getBoundingClientRect?.();
+        const area = rect ? rect.width * rect.height : Infinity;
+        if (probe.matches?.(WRAPPER_SELECTOR)) {
+          if (!wrapper) wrapper = probe;
+        } else {
+          const priority = regionPriority(probe);
+          if (priority > bestPriority || (priority === bestPriority && area < bestArea)) {
+            bestPriority = priority;
+            bestArea = area;
+            best = probe;
+          }
+        }
+      }
+      probe = probe.parentElement;
+    }
+  }
+  return best || wrapper;
+}
+
 /** Prefer an individual content block over a whole-session wrapper. */
 function preferRegionNode(target, point) {
-  const hit = node => {
-    const rect = node.getBoundingClientRect?.();
-    return rect && (!point || (point.clientX >= rect.left && point.clientX <= rect.right
-      && point.clientY >= rect.top && point.clientY <= rect.bottom));
-  };
-  const candidates = [...(target?.querySelectorAll?.(MEDIUM_PRIORITY + ', ' + HIGH_PRIORITY) ?? [])]
-    .filter(node => hit(node) && !node.closest?.('[data-plugin-session-surface]'))
-    .filter(node => {
-      const text = cleanNodeText(node);
-      return text.length >= 3 && text.length <= 600;
-    });
-  if (candidates.length) {
-    candidates.sort((a, b) => {
-      const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-      return (ra.width * ra.height) - (rb.width * rb.height);
-    });
-    return candidates[0];
-  }
+  const atPoint = regionAtPoint(point);
+  if (atPoint) return atPoint;
   let node = target;
   while (node && node !== document.body) {
     const text = cleanNodeText(node);
@@ -806,8 +819,9 @@ export function activate(ctx) {
         canvas.append(dragBox);
         root.append(canvas);
 
-        let regions = [], boxes = new Map(), selected = new Set(), layoutQueued = false, dragMoved = false;
-        let start = null, canvasBase = null, lastDragRect = null, suppressBoxClick = false;
+        let regions = [], visibleRegions = [], boxes = new Map(), regionByNode = new Map();
+        let selected = new Set(), layoutQueued = false, dragMoved = false;
+        let currentRoots = [], start = null, canvasBase = null, lastDragRect = null, suppressBoxClick = false;
         let rawHits = 0, clickCount = 0, scopeLabel = '?', detectError = '', notice = '';
 
         const setSelected = (region, on) => {
@@ -816,7 +830,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          status.textContent = `v0.1.14 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          status.textContent = `v0.1.15 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
           debug.textContent = `debug · scope=${scopeLabel} found=${rawHits} clicks=${clickCount}`
             + (detectError ? ` · error: ${detectError}` : '')
@@ -826,48 +840,43 @@ export function activate(ctx) {
         };
         const scroller = document.querySelector('[role="log"] > div[style*="scrollbar-gutter"]')
           || document.querySelector('[role="log"] > div');
-        const scrollTop = () => scroller?.scrollTop || 0;
-        // Record each region's position once. Scrolling shifts that recorded rect
-        // by the scroll delta, so layout never measures the whole transcript.
-        const prepareRegion = region => {
-          const rect = region.node.getBoundingClientRect?.();
-          region.at = rect
-            ? { top: rect.top, bottom: rect.bottom, scroll: scrollTop() }
-            : { top: 0, bottom: 0, scroll: scrollTop() };
+        signal.addEventListener('abort', () => {
+          delete document.documentElement.dataset.snHitTest;
+          delete document.documentElement.dataset.snPick;
+        }, { once: true });
+        const trackRegion = region => {
+          const existing = regionByNode.get(region.node);
+          if (existing) return existing;
+          regionByNode.set(region.node, region);
+          regions.push(region);
           return region;
         };
-        const inView = region => {
-          if (!region.at) prepareRegion(region);
-          const delta = scrollTop() - region.at.scroll;
-          const base = canvasBase || canvas.getBoundingClientRect();
-          const margin = 160;
-          return region.at.bottom - delta >= base.top - margin
-            && region.at.top - delta <= base.bottom + margin;
+        const dropRegion = region => {
+          boxes.get(region)?.remove();
+          boxes.delete(region);
+          selected.delete(region);
+          regionByNode.delete(region.node);
+          const index = regions.indexOf(region);
+          if (index >= 0) regions.splice(index, 1);
+          const visibleIndex = visibleRegions.indexOf(region);
+          if (visibleIndex >= 0) visibleRegions.splice(visibleIndex, 1);
         };
         const layout = () => {
           layoutQueued = false;
           if (signal.aborted) return;
           canvasBase = canvas.getBoundingClientRect();
-          for (let i = regions.length - 1; i >= 0; i--) {
-            const region = regions[i];
-            if (region.node.isConnected) continue;
-            boxes.get(region)?.remove();
+          for (let i = visibleRegions.length - 1; i >= 0; i--) {
+            if (!visibleRegions[i].node.isConnected) dropRegion(visibleRegions[i]);
+          }
+          const keep = new Set(visibleRegions);
+          for (const [region, box] of boxes) {
+            if (keep.has(region)) continue;
+            box.remove();
             boxes.delete(region);
-            selected.delete(region);
-            regions.splice(i, 1);
           }
-          const visible = [];
-          for (const region of regions) {
-            if (!inView(region)) {
-              boxes.get(region)?.remove();
-              boxes.delete(region);
-              continue;
-            }
-            if (!boxes.has(region)) addBox(region);
-            visible.push(region);
-          }
-          const measured = visible.map(region => ({ region, rect: region.node.getBoundingClientRect() }));
+          const measured = visibleRegions.map(region => ({ region, rect: region.node.getBoundingClientRect() }));
           for (const { region, rect } of measured) {
+            if (!boxes.has(region)) addBox(region);
             const box = boxes.get(region);
             region.rect = {
               left: rect.left - canvasBase.left, top: rect.top - canvasBase.top,
@@ -882,13 +891,9 @@ export function activate(ctx) {
           }
           updateStatus();
         };
-        const queueLayout = () => {
-          if (layoutQueued || signal.aborted) return;
-          layoutQueued = true;
-          globalThis.requestAnimationFrame?.(layout);
-        };
         /** Find real transcript elements under the overlay by temporarily making
-         * the surface transparent to hit-testing. Works even if host selectors change. */
+         * the surface transparent to hit-testing. Only visible content is probed,
+         * so a long session never needs a full transcript scan. */
         const hitTestRegions = roots => {
           const frame = canvas.closest('[data-plugin-session-surface-frame]');
           const base = canvas.getBoundingClientRect();
@@ -898,21 +903,10 @@ export function activate(ctx) {
           try {
             if (frame) frame.style.pointerEvents = 'none';
             canvas.style.pointerEvents = 'none';
-            canvas.dataset.hitTest = '1';
+            document.documentElement.dataset.snHitTest = '1';
             for (let y = base.top + 4; y < base.bottom - 4; y += 28) {
               for (let x = base.left + 4; x < base.right - 4; x += 56) {
-                let node = document.elementFromPoint?.(x, y);
-                let matched = null;
-                let probe = node;
-                while (probe) {
-                  if (probe.matches?.(REGION_SELECTOR)) { matched = probe; break; }
-                  probe = probe.parentElement;
-                }
-                // Fallback: prefer the smallest real content block at this point.
-                if (!matched && node) {
-                  const preferred = preferRegionNode(node, { clientX: x, clientY: y });
-                  if (preferred && roots.some(root => root === preferred || root.contains(preferred))) matched = preferred;
-                }
+                const matched = regionAtPoint({ clientX: x, clientY: y });
                 if (matched && roots.some(root => root === matched || root.contains(matched))) found.add(matched);
               }
             }
@@ -921,7 +915,7 @@ export function activate(ctx) {
           } finally {
             if (frame) frame.style.pointerEvents = oldFrame;
             canvas.style.pointerEvents = oldCanvas;
-            delete canvas.dataset.hitTest;
+            delete document.documentElement.dataset.snHitTest;
           }
           return [...found];
         };
@@ -947,6 +941,29 @@ export function activate(ctx) {
           boxes.set(region, box);
         };
 
+        let lastVisibleSignature = '';
+        // Re-probe only the canvas on scroll. Discovered regions stay in the
+        // cache so selections survive moving away from them.
+        const refreshVisible = () => {
+          if (signal.aborted || !currentRoots.length) return;
+          const hits = hitTestRegions(currentRoots);
+          visibleRegions = findRegions(hits).map(trackRegion);
+          layout();
+          const signature = `${hits.length}:${visibleRegions.length}:${regions.length}`;
+          if (signature !== lastVisibleSignature) {
+            lastVisibleSignature = signature;
+            logEvent('visible-refresh', {
+              hits: hits.length, regions: regions.length, boxes: boxes.size,
+              scrollTop: scroller?.scrollTop ?? null,
+            });
+          }
+        };
+        const queueVisibleRefresh = () => {
+          if (layoutQueued || signal.aborted) return;
+          layoutQueued = true;
+          globalThis.requestAnimationFrame?.(refreshVisible);
+        };
+
         const detect = () => {
           if (signal.aborted) return;
           selected = new Set();
@@ -954,6 +971,11 @@ export function activate(ctx) {
           detectError = '';
           for (const box of boxes.values()) box.remove();
           boxes = new Map();
+          regions = [];
+          visibleRegions = [];
+          regionByNode = new Map();
+          currentRoots = [];
+          lastVisibleSignature = '';
           // The main transcript is usually [role="log"] with one or more
           // [data-session-find-root] descendants. Some sessions expose question
           // docks or alternate layouts, so include every plausible root.
@@ -969,27 +991,26 @@ export function activate(ctx) {
           scopeLabel = roots.length
             ? `${log ? 'log' : 'doc'}/roots×${roots.length}`
             : 'no-transcript';
-          const selectorNodes = [];
-          for (const root of roots) selectorNodes.push(...root.querySelectorAll(REGION_SELECTOR));
-          let hitNodes = [];
+          currentRoots = roots;
+          let hits = [];
           try {
-            hitNodes = hitTestRegions(roots);
+            hits = hitTestRegions(roots);
           } catch (error) {
             detectError = String(error?.message || error);
             logEvent('hit-test-error', { message: detectError }, 'error');
           }
-          rawHits = new Set([...selectorNodes, ...hitNodes]).size;
-          regions = findRegions(...roots, hitNodes).map(prepareRegion);
+          rawHits = hits.length;
+          visibleRegions = findRegions(hits).map(trackRegion);
           layout();
           logEvent('detect', {
             sessionId: session.sessionId, scope: scopeLabel, roots: roots.length,
-            selectorNodes: selectorNodes.length, hitNodes: hitNodes.length, rawHits, regions: regions.length, boxes: boxes.size,
-            sample: regions.slice(0, 8).map(r => ({ type: r.type, label: r.label, tag: r.node?.tagName?.toLowerCase?.() || '', text: cleanNodeText(r.node).slice(0, 80) })),
+            hits: hits.length, rawHits, regions: regions.length, boxes: boxes.size,
+            sample: visibleRegions.slice(0, 8).map(r => ({ type: r.type, label: r.label, tag: r.node?.tagName?.toLowerCase?.() || '', text: cleanNodeText(r.node).slice(0, 80) })),
           });
-          // The frame can still be sizing when content mounts. Always re-layout,
-          // even when regions were found, because boxes may be positioned wrongly.
-          globalThis.requestAnimationFrame?.(queueLayout);
-          globalThis.setTimeout?.(() => { if (!signal.aborted) { layout(); if (!regions.length) detect(); } }, 350);
+          // The frame can still be sizing when content mounts. Re-probe once the
+          // layout settles instead of waiting for another full-session scan.
+          globalThis.requestAnimationFrame?.(queueVisibleRefresh);
+          globalThis.setTimeout?.(() => { if (!signal.aborted) { refreshVisible(); if (!regions.length) detect(); } }, 350);
         };
 
         const addHandle = widget(ctx.ui.mountButton(addSlot, {
@@ -1103,10 +1124,10 @@ export function activate(ctx) {
           if (!scroller) return;
           event.preventDefault();
           scroller.scrollTop += event.deltaY;
-          queueLayout();
+          queueVisibleRefresh();
         }, { signal, passive: false });
-        globalThis.addEventListener?.('resize', queueLayout, { signal });
-        document.addEventListener('scroll', queueLayout, { capture: true, signal });
+        globalThis.addEventListener?.('resize', queueVisibleRefresh, { signal });
+        document.addEventListener('scroll', queueVisibleRefresh, { capture: true, signal });
 
         refresh.addEventListener('click', () => { logEvent('refresh-click', {}); detect(); }, { signal });
         selectAll.addEventListener('click', () => {
@@ -1126,6 +1147,8 @@ export function activate(ctx) {
           if (frame) frame.style.pointerEvents = on ? 'none' : '';
           canvas.style.pointerEvents = on ? 'none' : '';
           head.style.pointerEvents = on ? 'auto' : '';
+          if (on) document.documentElement.dataset.snPick = '1';
+          else delete document.documentElement.dataset.snPick;
           pickMode = on;
           pick.classList.toggle('is-active', on);
           pick.textContent = on ? 'Click transcript…' : 'Pick element';
@@ -1156,9 +1179,9 @@ export function activate(ctx) {
             region = node ? findRegions([node])[0] : null;
           }
           if (region) {
-            prepareRegion(region);
-            if (!regions.includes(region)) regions.push(region);
-            setSelected(region, true);
+            const tracked = trackRegion(region);
+            if (!visibleRegions.includes(tracked)) visibleRegions.push(tracked);
+            setSelected(tracked, true);
             clickCount += 1;
             layout();
             logEvent('pick-selected', { type: region.type, label: region.label, tag: node.tagName?.toLowerCase?.() || '', preview: cleanNodeText(node).slice(0, 120) });
