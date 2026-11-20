@@ -793,7 +793,7 @@ export function activate(ctx) {
         root.append(canvas);
 
         let regions = [], boxes = new Map(), selected = new Set(), layoutQueued = false, dragMoved = false;
-        let start = null, canvasBase = null, lastDragRect = null;
+        let start = null, canvasBase = null, lastDragRect = null, suppressBoxClick = false;
         let rawHits = 0, clickCount = 0, scopeLabel = '?', detectError = '', notice = '';
 
         const setSelected = (region, on) => {
@@ -802,7 +802,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          status.textContent = `v0.1.10 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          status.textContent = `v0.1.11 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
           debug.textContent = `debug · scope=${scopeLabel} found=${rawHits} clicks=${clickCount}`
             + (detectError ? ` · error: ${detectError}` : '')
@@ -881,6 +881,7 @@ export function activate(ctx) {
           // Native click is the most reliable selection path.
           box.addEventListener('click', event => {
             event.stopPropagation();
+            if (suppressBoxClick) { suppressBoxClick = false; return; }
             clickCount += 1;
             const on = !selected.has(region);
             setSelected(region, on);
@@ -981,8 +982,10 @@ export function activate(ctx) {
         // Drag is compared in viewport coordinates against live element rects:
         // canvas-relative coordinates drift when the transcript scrolls.
         canvas.addEventListener('pointerdown', event => {
-          if (signal.aborted || event.target.closest?.('.sn-region-box')) return;
-          event.preventDefault();
+          if (signal.aborted) return;
+          // A drag may start on a box. Only empty canvas needs preventDefault.
+          if (!event.target.closest?.('.sn-region-box')) event.preventDefault();
+          suppressBoxClick = false;
           canvasBase = canvas.getBoundingClientRect();
           start = { x: event.clientX, y: event.clientY };
           dragMoved = false;
@@ -1018,10 +1021,13 @@ export function activate(ctx) {
         }, { signal });
         const finishDrag = () => {
           if (!start) return;
-          if (dragMoved) logEvent('drag-select', {
-            selected: selected.size, regions: regions.length,
-            rect: lastDragRect, scrollTop: document.querySelector('[role="log"] > div')?.scrollTop ?? null,
-          });
+          if (dragMoved) {
+            suppressBoxClick = true;
+            logEvent('drag-select', {
+              selected: selected.size, regions: regions.length,
+              rect: lastDragRect, scrollTop: document.querySelector('[role="log"] > div')?.scrollTop ?? null,
+            });
+          }
           for (const box of boxes.values()) box.classList.remove('is-drag');
           dragBox.hidden = true;
           dragBox.style.width = '0px';
@@ -1321,7 +1327,8 @@ export function activate(ctx) {
           cardHead.append(el('span', 'sn-block-badge', block.type || 'text'));
           if (block.caption) cardHead.append(el('span', '', block.caption));
           card.append(cardHead);
-          markdown(card, block.markdown, viewSignal);
+          if (block.type === 'text') card.append(el('pre', 'sn-plain-text', block.markdown || ''));
+          else markdown(card, block.markdown, viewSignal);
           blocks.append(card);
         }
         detailPane.append(blocks);

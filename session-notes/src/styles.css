@@ -156,6 +156,12 @@
 }
 
 .sn-markdown { overflow-x: auto; }
+.sn-plain-text {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .sn-markdown table { border-collapse: collapse; }
 .sn-markdown th,
 .sn-markdown td { border: 1px solid var(--border, rgba(127, 127, 127, 0.3)); padding: 0.25rem 0.45rem; }
