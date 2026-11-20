@@ -701,7 +701,7 @@ export function activate(ctx) {
     }, { signal }), signal);
     return handle;
   };
-  const markdown = (parent, content, signal) => {
+  const renderMarkdown = (parent, content, signal) => {
     const slot = el('div', 'sn-markdown');
     parent.append(slot);
     return widget(ctx.ui.mountMarkdown(slot, { text: content || '' }, { signal }), signal);
@@ -885,7 +885,7 @@ export function activate(ctx) {
           sourceHead.append(el('span', 'sn-capture-kind', `Message ${index + 1}`));
           row.append(sourceHead);
           const body = el('div', 'sn-capture-body');
-          markdown(body, source, signal);
+          renderMarkdown(body, source, signal);
           row.append(body);
           scroll.append(row);
           noteIcon(sourceHead, { type: 'text', markdown: source.slice(0, 12000), caption: 'Message' }, signal, `Add message ${index + 1} to note`);
@@ -986,7 +986,7 @@ export function activate(ctx) {
           boxes.get(region)?.classList.toggle('is-selected', on);
         };
         const updateStatus = () => {
-          const nextStatus = `v0.1.20 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
+          const nextStatus = `v0.1.21 · ${selected.size} of ${regions.length} regions selected — click a box or drag over the transcript.`;
           if (nextStatus !== lastStatus) { status.textContent = nextStatus; lastStatus = nextStatus; }
           const logHint = logPath ? ` · log=${logPath.split('/').pop()}` : '';
           const nextDebug = `debug · scope=${scopeLabel} candidates=${candidateCount} clicks=${clickCount}`
@@ -1535,7 +1535,7 @@ export function activate(ctx) {
             pane.append(el('h4', 'sn-label', 'PDF preview'));
             const preview = el('div', 'sn-print-root');
             pane.append(preview);
-            markdown(preview, markdown, dialogSignal);
+            renderMarkdown(preview, markdown, dialogSignal);
 
             pane.append(el('h4', 'sn-label', 'Markdown source'));
             const area = el('textarea', 'sn-textarea sn-export-text', markdown);
@@ -1756,7 +1756,7 @@ export function activate(ctx) {
           cardHead.append(meta, actions);
           card.append(cardHead);
           if (block.type === 'text') card.append(el('pre', 'sn-plain-text', block.markdown || ''));
-          else markdown(card, block.markdown, viewSignal);
+          else renderMarkdown(card, block.markdown, viewSignal);
           blocks.append(card);
         });
         detailPane.append(blocks);
