@@ -40,6 +40,10 @@ const questionSchema = {
       type: "string",
       description: "Mark scheme / answer guidance in Markdown. Revealed only after the learner answers.",
     },
+    diagramMarkdown: {
+      type: "string",
+      description: "Optional approximate markdown/text diagram extracted from PDF vectors to help visualize geometry/figures. Treat as approximate; original PDF is source of truth.",
+    },
   },
   required: ["question"],
   additionalProperties: false,
@@ -90,7 +94,8 @@ const TEACHER_INSTRUCTIONS = [
   "If a subject hint is supplied, the search is limited to that subject for speed and relevance. Common hints: 'math aa', 'math ai', 'physics', 'chemistry', 'biology', 'economics', 'business management'.",
   "You may also fetch a specific document with {url:'https://ibdocs.re/documents/...'} or a bare document id, and list the rows of a folder with {list:true, url:'<folder url>'}.",
   "Check the returned 'fetched' field for the full excerpt and source links. Topic search returns snippets from real PDFs — quote them faithfully and do not invent wording or a source URL.",
-  "After retrieving a question, pose exactly one using ask_ibdocs_pastpaper_question. Put the exam wording in 'question' and any mark-scheme text in 'markscheme'. Include sourceUrl, pdfUrl, subject, paper and topic when known.",
+  "If diagramMarkdown is present, include it in a fenced markdown/text block so the learner can see an approximate diagram/geometry; make clear it is approximate and the original PDF is the source of truth.",
+  "After retrieving a question, pose exactly one using ask_ibdocs_pastpaper_question. Put the exam wording in 'question' and any mark-scheme text in 'markscheme'. Include sourceUrl, pdfUrl, subject, paper, topic, and diagramMarkdown when known. Always include pdfUrl in the payload and mention it in the question text/card so learners can open the original PDF for the actual diagram/figure.",
   "The mark scheme is revealed only after the learner answers; do not show it in your teaching text before the question is posed.",
   "You may also use {add:true, question, markscheme?, subject?, paper?, topic?, sourceUrl?, pdfUrl?} to save learner-pasted past-paper text into the plugin's local store, and {useStored:true} to retrieve a saved item.",
   "Respect the source material: it is for personal study. Do not bulk-download or redistribute the archive.",
@@ -150,13 +155,24 @@ exports.activate = (ctx) => {
   // Small in-memory cache so repeated searches do not re-download the same PDFs.
   const pdfCache = new Map();
 
-  async function pdfText(pdfUrl, signal) {
+  async function pdfContent(pdfUrl, signal) {
     if (pdfCache.has(pdfUrl)) return pdfCache.get(pdfUrl);
     const buffer = await ib.fetchBinary(pdfUrl, signal);
     const text = ib.extractPdfText(buffer);
+    let diagramMarkdown = "";
+    try {
+      const diagrams = ib.extractPdfDiagramMarkdown(buffer, { maxDiagrams: 2 });
+      diagramMarkdown = diagrams.map(d => d.markdown).filter(Boolean).join("\n\n");
+    } catch {}
+    const value = { text, diagramMarkdown };
     if (pdfCache.size > 40) pdfCache.clear();
-    pdfCache.set(pdfUrl, text);
-    return text;
+    pdfCache.set(pdfUrl, value);
+    return value;
+  }
+
+  async function pdfText(pdfUrl, signal) {
+    const v = await pdfContent(pdfUrl, signal);
+    return v.text;
   }
 
   // --- Frontend operations -------------------------------------------------
@@ -292,7 +308,8 @@ exports.activate = (ctx) => {
             }
             continue;
           }
-          const text = await pdfText(info.pdfUrl, signal);
+          const content = await pdfContent(info.pdfUrl, signal);
+          const text = content.text;
           pdfsScanned++;
           const snippet = ib.snippetFor(text, topic);
           const cText = ib.compact(text);
@@ -310,6 +327,7 @@ exports.activate = (ctx) => {
               subject: doc.subjectSlug,
               matchedBy: hasPhrase ? "pdf-phrase" : wordHits ? "pdf-words" : "title",
               score: doc.score + wordHits,
+              diagramMarkdown: content.diagramMarkdown || "",
             });
           }
         } catch (e) {
@@ -328,7 +346,8 @@ exports.activate = (ctx) => {
         const chosen =
           top.find((r) => r.pdfUrl && r.snippet && r.snippet.trim()) || top[0];
         if (chosen && chosen.pdfUrl) {
-          const text = await pdfText(chosen.pdfUrl, signal);
+          const content = await pdfContent(chosen.pdfUrl, signal);
+          const text = content.text;
           if (text) {
             fetched = {
               question: ib.snippetFor(text, topic, 1600) || text.slice(0, 1600),
@@ -337,6 +356,7 @@ exports.activate = (ctx) => {
               pdfUrl: chosen.pdfUrl,
               subject: chosen.subject,
               topic,
+              diagramMarkdown: chosen.diagramMarkdown || content.diagramMarkdown || "",
               confidence: "medium",
             };
           }
@@ -397,7 +417,8 @@ exports.activate = (ctx) => {
       if (!info.title) throw new Error("Could not read a document title from that ibdocs.re page.");
     }
 
-    const text = pdfUrl ? await pdfText(pdfUrl, signal) : "";
+    const content = pdfUrl ? await pdfContent(pdfUrl, signal) : { text: "", diagramMarkdown: "" };
+    const text = content.text || "";
     if (!text) {
       throw new Error(
         "No readable PDF text could be extracted from that document. Try a different document, or paste the question text with {add:true, question}."
@@ -413,6 +434,7 @@ exports.activate = (ctx) => {
       topic: (typeof value.topic === "string" && value.topic) || "",
       sourceUrl: info.sourceUrl,
       pdfUrl,
+      diagramMarkdown: content.diagramMarkdown || "",
       createdAt: new Date().toISOString(),
       origin: "fetch",
       confidence: "medium",
@@ -487,7 +509,7 @@ exports.activate = (ctx) => {
         name: FETCH_TOOL_NAME,
         label: "Fetch IB Docs past paper",
         description:
-          "Find an IB past-paper question from ibdocs.re by TOPIC (search:true with topic, optionally subject), fetch one by document URL/id, list a folder, or save learner-pasted text. No login required. Returns structured JSON; never invent a source.",
+          "Find an IB past-paper question from ibdocs.re by TOPIC (search:true with topic, optionally subject), fetch one by document URL/id, list a folder, or save learner-pasted text. No login required. Returns structured JSON including diagramMarkdown (approximate text/ASCII diagram from PDF vectors) when available; never invent a source.",
         parameters: {
           type: "object",
           properties: {

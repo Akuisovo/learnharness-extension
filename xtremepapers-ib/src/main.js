@@ -193,8 +193,18 @@ export function activate(ctx) {
       const metaBits = [payload.subject, payload.paper, payload.topic].filter(Boolean);
       if (metaBits.length) el(wrap, "p", metaBits.join(" · "), "xp-pp-meta");
       appendMarkdown(wrap, mountContext.input.question || payload.question || "");
-      if (payload.sourceUrl) {
-        const a = el(wrap, "a", "View source on papers.xtremepape.rs", "xp-pp-source");
+      if (typeof payload.diagramMarkdown === "string" && payload.diagramMarkdown.trim()) {
+        el(wrap, "h3", "Diagram (approximate)");
+        const pre = el(wrap, "pre", payload.diagramMarkdown);
+        pre.style.whiteSpace = "pre-wrap";
+      }
+      if (payload.pdfUrl) {
+        const a = el(wrap, "a", "Open original PDF (actual diagram)", "ib-pp-source");
+        a.href = payload.pdfUrl;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+      } else if (payload.sourceUrl) {
+        const a = el(wrap, "a", "View source", "ib-pp-source");
         a.href = payload.sourceUrl;
         a.target = "_blank";
         a.rel = "noopener noreferrer";
@@ -249,14 +259,26 @@ export function activate(ctx) {
       el(wrap, "h3", "Your answer");
       appendMarkdown(wrap, typeof mountContext.answer === "string" ? mountContext.answer : JSON.stringify(mountContext.answer));
 
+      const diagram = payload.diagramMarkdown;
+      if (typeof diagram === "string" && diagram.trim()) {
+        el(wrap, "h3", "Diagram (approximate)");
+        const pre = el(wrap, "pre", diagram, "ib-pp-diagram");
+        pre.style.whiteSpace = "pre-wrap";
+      }
       const scheme = payload.markscheme;
       if (typeof scheme === "string" && scheme.trim()) {
         el(wrap, "h3", "Mark scheme");
         appendMarkdown(wrap, scheme);
       }
 
+      if (payload.pdfUrl) {
+        const a = el(wrap, "a", "Open original PDF (actual diagram)", "ib-pp-source");
+        a.href = payload.pdfUrl;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+      }
       if (payload.sourceUrl) {
-        const a = el(wrap, "a", "View source on papers.xtremepape.rs", "xp-pp-source");
+        const a = el(wrap, "a", payload.pdfUrl ? "View source page" : "View source", "ib-pp-source");
         a.href = payload.sourceUrl;
         a.target = "_blank";
         a.rel = "noopener noreferrer";
@@ -289,12 +311,23 @@ export function activate(ctx) {
             const card = el(list, "article", undefined, "xp-pp-card");
             el(card, "h2", item.subject || item.paper || "Past-paper item");
             appendMarkdown(card, item.question);
+            if (item.diagramMarkdown) {
+              el(card, "h3", "Diagram (approximate)");
+              const pre = el(card, "pre", item.diagramMarkdown);
+              pre.style.whiteSpace = "pre-wrap";
+            }
             if (item.markscheme) {
               el(card, "h3", "Mark scheme");
               appendMarkdown(card, item.markscheme);
             }
+            if (item.pdfUrl) {
+              const a = el(card, "a", "Open original PDF (actual diagram)", "ib-pp-source");
+              a.href = item.pdfUrl;
+              a.target = "_blank";
+              a.rel = "noopener noreferrer";
+            }
             if (item.sourceUrl) {
-              const a = el(card, "a", item.sourceUrl, "xp-pp-source");
+              const a = el(card, "a", item.pdfUrl ? "View source page" : item.sourceUrl, "ib-pp-source");
               a.href = item.sourceUrl;
               a.target = "_blank";
               a.rel = "noopener noreferrer";

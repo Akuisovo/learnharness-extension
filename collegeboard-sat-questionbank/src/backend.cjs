@@ -30,6 +30,7 @@ const questionSchema = {
   properties: {
     question: { type: "string", minLength: 1, description: "Learner-visible question text. MUST begin with question serial/ID(s) and official source; keep official wording (plain-text rendering of MathML/HTML is fine)." },
     promptHtml: { type: "string", description: "Original HTML/MathML stem when available (for display only)." },
+    diagramMarkdown: { type: "string", description: "Optional approximate markdown diagram/description extracted from stimulus/stem HTML (SVG labels, tables, alt text). Treat as approximate; official question is source of truth." },
     choices: {
       type: "array",
       description: "Answer choices for multiple-choice questions.",
@@ -89,7 +90,7 @@ const questionType = {
   teach: {
     toolName: TEACH_TOOL_NAME,
     description:
-      "Ask the learner an official College Board SAT Suite Question Bank question. You MUST include the question serial/ID(s) (externalId, questionId, uId, IBN) and official source (https://satsuiteeducatorquestionbank.collegeboard.org/digital/search) in the question text you present. Supply choices/correctAnswer when applicable and include rationale (official explanation). Rationale is revealed only after the learner answers.",
+      "Ask the learner an official College Board SAT Suite Question Bank question. You MUST include the question serial/ID(s) (externalId, questionId, uId, IBN) and official source (https://satsuiteeducatorquestionbank.collegeboard.org/digital/search) in the question text you present. Supply choices/correctAnswer when applicable, include rationale (official explanation), and include diagramMarkdown when present for figures/geometry. Rationale is revealed only after the learner answers.",
   },
   validateQuestion({ input }) {
     return validateQuestionPayload(input);
@@ -139,7 +140,7 @@ const TEACHER_INSTRUCTIONS = [
   "Search returns question metadata (including serial IDs, domain, skill, difficulty, active flag) but not full text/rationale. To get official question and explanation, call fetch_collegeboard_sat_question with {fetch:true, externalId:'...'} (pass meta from the search result when available).",
   "excludeActive:true filters out questions marked active by College Board (non-empty IBN). Prefer excluding active questions when the user asks for practice not from active assessments. Some active items may lack externalId and cannot be fetched for full text/rationale, but their serial IDs are still returned for reference.",
   "Official explanations come from College Board's question detail 'rationale' field. Quote or faithfully represent them; do not invent an explanation or answer if fetch fails.",
-  "After fetching, pose exactly one using ask_collegeboard_sat_question. Include question text that starts with the ID/serial(s) and official source URL, plus choices/correctAnswer when present, rationale, and serial/ID fields (externalId, questionId, uId, ibn, sourceUrl). Rationale is shown only after the learner answers; do not reveal it before posing.",
+  "After fetching, pose exactly one using ask_collegeboard_sat_question. Include question text that starts with the ID/serial(s) and official source URL, plus choices/correctAnswer when present, rationale, diagramMarkdown when present, and serial/ID fields (externalId, questionId, uId, ibn, sourceUrl). If diagramMarkdown is present, include it in a fenced markdown/text block and make clear it is approximate. Rationale is shown only after the learner answers; do not reveal it before posing.",
   "Missed-skill tracking/spaced review is built in. Question attempts may be auto-recorded; you can also record manually with fetch_collegeboard_sat_question {recordAttempt:true, externalId/questionId, domainCode, skillCode, difficulty, result, answer, correctAnswer}. Use {listReview:true,dueOnly:true} or {getReviewTargets:true} to find due review items and imported weakness targets, then fetch and pose official questions for those skills.",
   "Bluebook/My Practice import is manual-first (no account scraping). Import weaknesses with {importWeaknesses:true, sourceLabel:'Bluebook Practice Test ...', text:'CSV/TSV/JSON/pasted', confirm:true|false} or {targets:[...]}. Add manually checked weaknesses with {addManualWeakness:true, domainCode, skillCode?, difficulty?, notes?, confirm:true}. Map targets to College Board domain/skill codes before drilling; confirm ambiguous mappings with the user.",
   "You may save/reuse items with {add:true,...} or {useStored:true,id}. Respect College Board content: for personal study/practice, do not bulk-download or redistribute; store IDs/progress, re-fetch official question/rationale on demand.",
@@ -165,6 +166,73 @@ function assertObject(input, label) {
 function toArray(v) {
   if (v == null) return [];
   return Array.isArray(v) ? v : [v];
+}
+
+function htmlToDiagramMarkdown(html) {
+  const src = String(html || "");
+  if (!src.trim()) return "";
+  const blocks = [];
+
+  // Tables -> markdown tables
+  const tableRe = /<table\b[\s\S]*?<\/table>/gi;
+  for (const tm of src.matchAll(tableRe)) {
+    const tableHtml = tm[0];
+    const rows = [...tableHtml.matchAll(/<tr\b[\s\S]*?<\/tr>/gi)].map(rm => {
+      const cells = [...rm[0].matchAll(/<(th|td)\b[\s\S]*?<\/\1>/gi)].map(cm => cb.stripHtml(cm[0]).replace(/\s+/g, " ").trim());
+      return cells;
+    }).filter(r => r.length);
+    if (!rows.length) continue;
+    const width = Math.max(...rows.map(r => r.length));
+    const norm = rows.map(r => r.concat(Array(Math.max(0, width - r.length)).fill("")));
+    const header = norm[0];
+    const sep = header.map(() => "---");
+    const body = norm.slice(1);
+    const lines = [
+      `| ${header.join(" | ")} |`,
+      `| ${sep.join(" | ")} |`,
+      ...body.map(r => `| ${r.join(" | ")} |`),
+    ];
+    blocks.push(lines.join("\n"));
+  }
+
+  // SVG/figure/img descriptions
+  const svgRe = /<svg\b[\s\S]*?<\/svg>/gi;
+  for (const sm of src.matchAll(svgRe)) {
+    const svg = sm[0];
+    const aria = (svg.match(/\baria-label\s*=\s*"([^"]*)"/i) || svg.match(/\baria-label\s*=\s*'([^']*)'/i) || [])[1] || "";
+    const title = (svg.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "";
+    const desc = (svg.match(/<desc[^>]*>([\s\S]*?)<\/desc>/i) || [])[1] || "";
+    const texts = [...svg.matchAll(/<text\b[\s\S]*?<\/text>/gi)].map(m => cb.stripHtml(m[0]).replace(/\s+/g, " ").trim()).filter(Boolean);
+    const uniqTexts = [...new Set(texts)].slice(0, 30);
+    const parts = [];
+    if (aria || title || desc) {
+      parts.push(`Diagram: ${cb.stripHtml(aria || title || desc).replace(/\s+/g, " ").trim()}`);
+    } else {
+      parts.push("Diagram: SVG figure (no text description provided).");
+    }
+    if (uniqTexts.length) parts.push(`Labels: ${uniqTexts.join(", ")}`);
+    parts.push("_Approximate diagram description extracted from SVG; verify against original question._");
+    blocks.push(parts.join("\n"));
+  }
+
+  const imgRe = /<img\b[^>]*>/gi;
+  for (const im of src.matchAll(imgRe)) {
+    const tag = im[0];
+    const alt = (tag.match(/\balt\s*=\s*"([^"]*)"/i) || tag.match(/\balt\s*=\s*'([^']*)'/i) || [])[1] || "";
+    if (alt.trim()) blocks.push(`Image: ${cb.stripHtml(alt).replace(/\s+/g, " ").trim()}`);
+  }
+
+  // Figure captions if no svg captured
+  if (!svgRe.test(src)) {
+    const figRe = /<figure\b[\s\S]*?<\/figure>/gi;
+    for (const fm of src.matchAll(figRe)) {
+      const caption = (fm[0].match(/<figcaption\b[\s\S]*?<\/figcaption>/gi) || []).map(c => cb.stripHtml(c)).join(" ").trim();
+      if (caption) blocks.push(`Figure: ${caption}`);
+    }
+  }
+
+  const seen = new Set();
+  return blocks.filter(b => { const k = b.trim(); if (!k || seen.has(k)) return false; seen.add(k); return true; }).join("\n\n");
 }
 
 function normaliseDifficulties(v) {
@@ -214,12 +282,14 @@ function buildSavedItem(detail, meta, extra = {}) {
   const question = [headerLines.join("\n"), bodyText].filter(Boolean).join("\n\n").trim();
 
   const promptHtml = [detail.stimulus, detail.stem].filter(v => typeof v === "string" && v.trim()).join("\n");
+  const diagramMarkdown = [htmlToDiagramMarkdown(detail.stimulus), htmlToDiagramMarkdown(detail.stem)].filter(Boolean).join("\n\n");
   return {
     id: `cb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
     question,
     promptHtml,
     stimulusHtml: String(detail.stimulus || ""),
     stemHtml: String(detail.stem || ""),
+    diagramMarkdown,
     choices,
     correctAnswer: detail.correct_answer || detail.keys || [],
     rationale,

@@ -173,6 +173,13 @@ function renderQuestion(container, question, options = {}) {
 
   renderMaybeHtml(wrap, q.promptHtml, q.question);
 
+  const diagram = typeof q.diagramMarkdown === "string" ? q.diagramMarkdown.trim() : "";
+  if (diagram) {
+    el(wrap, "h3", "Diagram (approximate)", "cb-subtitle");
+    const pre = el(wrap, "pre", diagram, "cb-pre");
+    pre.style.whiteSpace = "pre-wrap";
+  }
+
   const choices = Array.isArray(q.choices) ? q.choices : [];
   const showChoices = options.showChoices !== false;
   if (showChoices && choices.length) {

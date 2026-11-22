@@ -783,28 +783,39 @@ function collectPdfContentEvents(s, fontMap) {
           pdfTransformPoint(ctm, x + w, y + h), pdfTransformPoint(ctm, x, y + h)];
         pathIsRect = true;
       }
-    } else if (op === "S" || op === "s") {
-      if (path.length === 2) {
+    } else if (op === "S" || op === "s" || op === "f" || op === "F" || op === "f*" || op === "B" || op === "b" || op === "B*" || op === "b*" || op === "n") {
+      const isStroke = op === "S" || op === "s" || op === "B" || op === "b" || op === "B*" || op === "b*";
+      const isFill = op === "f" || op === "F" || op === "f*" || op === "B" || op === "b" || op === "B*" || op === "b*";
+      if (path.length === 2 && isStroke) {
         const [a, b] = path;
         if (Math.abs(a.y - b.y) <= 0.8 && Math.abs(a.x - b.x) >= 3) {
           events.push({ type: "line", x1: Math.min(a.x, b.x), x2: Math.max(a.x, b.x),
             y: (a.y + b.y) / 2, figureId });
+        } else {
+          events.push({ type: "seg", x1: a.x, y1: a.y, x2: b.x, y2: b.y, figureId });
         }
-      }
-      path = [];
-    } else if (op === "f" || op === "F" || op === "f*" || op === "B" || op === "b") {
-      if (!pathIsRect && path.length >= 6) {
+      } else if (pathIsRect && path.length >= 4) {
         const xs = path.map((p) => p.x);
         const ys = path.map((p) => p.y);
-        const x1 = Math.min(...xs), x2 = Math.max(...xs);
-        const y1 = Math.min(...ys), y2 = Math.max(...ys);
-        const w = x2 - x1, h = y2 - y1;
-        if (w >= 4 && w <= 40 && h >= 4 && h <= 40 && w / h >= 0.35 && w / h <= 2.8) {
-          events.push({ type: "radical", x1, x2, y1, y2, figureId });
+        events.push({ type: "rect", x1: Math.min(...xs), x2: Math.max(...xs), y1: Math.min(...ys), y2: Math.max(...ys), figureId });
+      } else if (path.length > 2) {
+        if (!pathIsRect && isFill && path.length >= 6) {
+          const xs = path.map((p) => p.x);
+          const ys = path.map((p) => p.y);
+          const x1 = Math.min(...xs), x2 = Math.max(...xs);
+          const y1 = Math.min(...ys), y2 = Math.max(...ys);
+          const w = x2 - x1, h = y2 - y1;
+          if (w >= 4 && w <= 40 && h >= 4 && h <= 40 && w / h >= 0.35 && w / h <= 2.8) {
+            events.push({ type: "radical", x1, x2, y1, y2, figureId });
+          }
+        }
+        // Approximate curves/polygons as segments for diagram extraction.
+        for (let i = 1; i < path.length; i++) {
+          const a = path[i - 1], b = path[i];
+          if (Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5) continue;
+          events.push({ type: "seg", x1: a.x, y1: a.y, x2: b.x, y2: b.y, figureId });
         }
       }
-      path = [];
-    } else if (op === "n") {
       path = [];
     } else if (op === "BDC") {
       const isFigure = operands.some((o) => o.t === "name" && o.v === "Figure");
@@ -943,6 +954,104 @@ function decodePdfContent2D(s, fontMap) {
   return out;
 }
 
+function extractPdfDiagramMarkdown(buffer, { maxDiagrams = 2, maxWidth = 64, maxHeight = 24 } = {}) {
+  if (!Buffer.isBuffer(buffer) || !buffer.length) return [];
+  const objects = parsePdfObjects(buffer);
+  const contentFonts = buildPdfContentFontMaps(objects);
+  const allEvents = [];
+  const add = (stream, fontMap) => {
+    if (!/BT[\s\S]*?ET|(?:\b(?:m|l|re|S|f|B)\b)/.test(stream)) return;
+    try { allEvents.push(...collectPdfContentEvents(stream, fontMap)); } catch {}
+  };
+  if (objects.size) {
+    for (const [num, body] of objects) add(pdfStreamOf(body), contentFonts.get(num));
+  }
+  const groups = new Map();
+  for (const e of allEvents) {
+    const key = e.figureId ? `fig:${e.figureId}` : "free";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
+  }
+  const diagrams = [];
+  for (const [key, events] of groups) {
+    const segs = events.filter(e => e.type === "seg" || e.type === "line" || e.type === "rect" || e.type === "radical");
+    const texts = events.filter(e => e.type === "text" && String(e.text || "").trim());
+    if (segs.length < 2) continue;
+    // Skip tiny/math-only figure fragments unless they look diagrammy.
+    const xs = [], ys = [];
+    for (const e of segs) {
+      if (e.type === "line") { xs.push(e.x1, e.x2); ys.push(e.y, e.y); }
+      else if (e.type === "rect") { xs.push(e.x1, e.x2); ys.push(e.y1, e.y2); }
+      else if (e.type === "radical") { xs.push(e.x1, e.x2); ys.push(e.y1, e.y2); }
+      else { xs.push(e.x1, e.x2); ys.push(e.y1, e.y2); }
+    }
+    for (const t of texts) { xs.push(t.x); ys.push(t.y); }
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    const w = maxX - minX, h = maxY - minY;
+    if (w < 20 || h < 20) continue;
+    if (segs.length < 3 && texts.length < 2) continue;
+
+    const gw = Math.max(20, Math.min(maxWidth, Math.round(w / Math.max(w / maxWidth, h / maxHeight, 1))));
+    const gh = Math.max(10, Math.min(maxHeight, Math.round(h / Math.max(w / maxWidth, h / maxHeight, 1))));
+    const grid = Array.from({ length: gh }, () => Array(gw).fill(" "));
+    const plot = (x, y, ch) => {
+      const gx = Math.round(((x - minX) / (w || 1)) * (gw - 1));
+      const gy = (gh - 1) - Math.round(((y - minY) / (h || 1)) * (gh - 1));
+      if (gx >= 0 && gx < gw && gy >= 0 && gy < gh) {
+        const cur = grid[gy][gx];
+        grid[gy][gx] = (cur === " " || cur === ".") ? ch : (cur === ch ? cur : "*");
+      }
+    };
+    const drawSeg = (x1, y1, x2, y2, ch = "-") => {
+      const steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1), 1);
+      const n = Math.ceil(steps / Math.max(w / gw, h / gh, 1)) + 1;
+      for (let i = 0; i <= n; i++) {
+        const t = i / n;
+        plot(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, ch);
+      }
+    };
+    for (const e of segs) {
+      if (e.type === "line") drawSeg(e.x1, e.y, e.x2, e.y, "-");
+      else if (e.type === "seg") {
+        const dx = Math.abs(e.x2 - e.x1), dy = Math.abs(e.y2 - e.y1);
+        const ch = dx < dy * 0.5 ? "|" : dy < dx * 0.5 ? "-" : "/";
+        drawSeg(e.x1, e.y1, e.x2, e.y2, ch);
+      } else if (e.type === "rect") {
+        drawSeg(e.x1, e.y1, e.x2, e.y1, "-"); drawSeg(e.x2, e.y1, e.x2, e.y2, "|");
+        drawSeg(e.x2, e.y2, e.x1, e.y2, "-"); drawSeg(e.x1, e.y2, e.x1, e.y1, "|");
+      } else if (e.type === "radical") {
+        drawSeg(e.x1, e.y1, e.x2, e.y1, "_");
+      }
+    }
+    // Place short labels.
+    const labels = [];
+    for (const t of texts) {
+      const label = String(t.text || "").replace(/\s+/g, " ").trim();
+      if (!label || label.length > 12) continue;
+      labels.push(label);
+      if (/^[A-Za-z0-9°'".,()=+\-]{1,4}$/.test(label)) {
+        const gx = Math.round(((t.x - minX) / (w || 1)) * (gw - 1));
+        const gy = (gh - 1) - Math.round(((t.y - minY) / (h || 1)) * (gh - 1));
+        if (gx >= 0 && gx < gw && gy >= 0 && gy < gh) {
+          for (let i = 0; i < label.length && gx + i < gw; i++) grid[gy][gx + i] = label[i];
+        }
+      }
+    }
+    const sketch = grid.map(r => r.join("").replace(/\s+$/, "")).join("\n");
+    const uniqLabels = [...new Set(labels)].slice(0, 20);
+    const md = [
+      "```text",
+      sketch,
+      "```",
+      uniqLabels.length ? `Labels: ${uniqLabels.join(", ")}` : "",
+      "_Approximate diagram extracted from PDF vectors/text; verify against original paper._",
+    ].filter(Boolean).join("\n");
+    diagrams.push({ key, width: w, height: h, labels: uniqLabels, markdown: md });
+  }
+  diagrams.sort((a, b) => (b.width * b.height) - (a.width * a.height));
+  return diagrams.slice(0, maxDiagrams);
+}
+
 /** Best-effort check that decoded text is real text, not a binary font blob. */
 function isDecodedPdfTextReadable(text) {
   if (!text || text.length < 8) return false;
@@ -1058,6 +1167,7 @@ module.exports = {
   extractRows,
   extractDocumentInfo,
   extractPdfText,
+  extractPdfDiagramMarkdown,
   cleanPdfText,
   isReadableStream,
   isDecodedPdfTextReadable,
