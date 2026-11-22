@@ -1,0 +1,12 @@
+{
+  "apiVersion": 1,
+  "id": "collegeboard-sat-questionbank",
+  "name": "College Board SAT Question Bank",
+  "version": "0.2.5",
+  "minAppVersion": "0.6.1",
+  "description": "Search and fetch official SAT Suite Question Bank questions from College Board by test, domain/topic, skill, and difficulty, with optional exclusion of active questions, official explanations/rationales, missed-skill tracking/spaced review, and manual Bluebook/My Practice weakness import. No login required; stores only local study data.",
+  "author": "local",
+  "main": "main.js",
+  "backend": "backend.cjs",
+  "styles": "styles.css"
+}

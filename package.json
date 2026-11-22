@@ -7,10 +7,12 @@
     "build:ibdocs": "npm --prefix ibdocs-pastpapers run build",
     "build:xtremepapers": "npm --prefix xtremepapers-ib run build",
     "build:notes": "npm --prefix session-notes run build",
-    "build": "npm run build:ibdocs && npm run build:xtremepapers && npm run build:notes",
+    "build:sat": "npm --prefix collegeboard-sat-questionbank run build",
+    "build": "npm run build:ibdocs && npm run build:xtremepapers && npm run build:notes && npm run build:sat",
     "test:ibdocs": "npm --prefix ibdocs-pastpapers test",
     "test:xtremepapers": "npm --prefix xtremepapers-ib test",
     "test:notes": "npm --prefix session-notes test",
-    "test": "npm run test:ibdocs && npm run test:xtremepapers && npm run test:notes"
+    "test:sat": "npm --prefix collegeboard-sat-questionbank test",
+    "test": "npm run test:ibdocs && npm run test:xtremepapers && npm run test:notes && npm run test:sat"
   }
 }
