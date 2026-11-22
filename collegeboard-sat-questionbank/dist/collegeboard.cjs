@@ -92,6 +92,7 @@ function formatQuestionId(value) {
   const raw = String(value == null ? "" : value).trim();
   if (!raw) return "";
   if (/^\d+$/.test(raw)) return raw.padStart(8, "0");
+  if (/^[A-Za-z0-9]{8}$/.test(raw)) return raw;
   return raw;
 }
 
@@ -258,7 +259,7 @@ function summariseMetadata(item, asmtEventId) {
   return {
     externalId: item.external_id || "",
     questionId: formatQuestionId(item.questionId || ""),
-    uId: item.uId || "",
+    uId: formatQuestionId(item.uId || ""),
     testId: Number(asmtEventId) || 99,
     test: testName(asmtEventId || 99),
     domain: item.primary_class_cd || "",

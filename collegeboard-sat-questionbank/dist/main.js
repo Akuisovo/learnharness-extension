@@ -37,18 +37,109 @@ function escapeHtml(str) {
   return String(str || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+function formatQuestionId(v) {
+  const raw = String(v == null ? "" : v).trim();
+  if (!raw) return "";
+  if (/^\d+$/.test(raw)) return raw.padStart(8, "0");
+  if (/^[A-Za-z0-9]{8}$/.test(raw)) return raw;
+  return raw;
+}
+
+function primaryQuestionId(q) {
+  const candidates = [
+    q && (q.questionId ?? q.question_id),
+    q && (q.uId ?? q.uid ?? q.u_id),
+    q && (q.externalId ?? q.external_id),
+  ].map(formatQuestionId).filter(Boolean);
+  const eightUnit = candidates.find(v => /^[A-Za-z0-9]{8}$/.test(v));
+  return eightUnit || candidates[0] || "";
+}
+
+function topicLabel(q) {
+  return [q && (q.domainName || q.domain), q && (q.skill || q.skill_desc)].filter(Boolean).join(" · ");
+}
+
+function difficultyLabel(q) {
+  return String((q && (q.difficultyName || q.difficulty)) || "").trim();
+}
+
+function parseQuestionMeta(text) {
+  const out = {};
+  const src = String(text || "");
+  const uid = src.match(/^\s*Question UID:\s*([A-Za-z0-9-]+)/mi);
+  if (uid) out.uId = uid[1].trim();
+  const qid = src.match(/^\s*Question ID:\s*([A-Za-z0-9-]+)/mi);
+  if (qid) out.questionId = qid[1].trim();
+  const topic = src.match(/^\s*Topic:\s*([^\n]+)/mi);
+  if (topic) out.topic = topic[1].trim();
+  const diff = src.match(/^\s*Difficulty:\s*([^\n]+)/mi);
+  if (diff) out.difficulty = diff[1].trim();
+  const ids = src.match(/^\s*Question IDs:\s*([^\n]+)/mi);
+  if (ids) {
+    ids[1].split("|").map(s => s.trim()).forEach((p) => {
+      const m = p.match(/^(externalId|questionId|uId|IBN):\s*(.+)$/i);
+      if (m) out[m[1].toLowerCase() === "ibn" ? "ibn" : m[1]] = m[2].trim();
+    });
+  }
+  const active = src.match(/\b(not active|active assessment|active question|active)\b/i);
+  if (active) out.activeText = /not active/i.test(active[0]) ? "not active" : "active";
+  return out;
+}
+
+function enrichQuestionView(q) {
+  const base = q && typeof q === "object" ? { ...q } : {};
+  const parsed = parseQuestionMeta(base.question || base.prompt || "");
+  if (!base.uId && parsed.uId) base.uId = parsed.uId;
+  if (!base.questionId && parsed.questionId) base.questionId = parsed.questionId;
+  if (!base.externalId && parsed.externalId) base.externalId = parsed.externalId;
+  if (!base.ibn && parsed.ibn) base.ibn = parsed.ibn;
+  if (!base.difficulty && !base.difficultyName && parsed.difficulty) base.difficulty = parsed.difficulty;
+  if (!topicLabel(base) && parsed.topic) {
+    const [domain, ...skillParts] = parsed.topic.split("·").map(s => s.trim()).filter(Boolean);
+    if (domain) base.domain = base.domain || domain;
+    if (skillParts.length) base.skill = base.skill || skillParts.join(" · ");
+  }
+  if (base.active !== true && base.active !== false && parsed.activeText) base.active = parsed.activeText !== "not active";
+  return base;
+}
+
+function sanitizeRichRoot(root) {
+  if (!root || typeof root.querySelectorAll !== "function") return;
+  root.querySelectorAll("script, iframe, object, embed, link, meta, base, form").forEach(n => n.remove());
+  root.querySelectorAll("*").forEach((n) => {
+    for (const attr of Array.from(n.attributes || [])) {
+      const name = attr.name.toLowerCase();
+      const value = String(attr.value || "");
+      if (name.startsWith("on")) { n.removeAttribute(attr.name); continue; }
+      if ((name === "href" || name === "xlink:href" || name === "src") && /^\s*(javascript|data):/i.test(value)) n.removeAttribute(attr.name);
+    }
+    if (String(n.tagName || "").toLowerCase() === "a") {
+      n.removeAttribute("href");
+      n.removeAttribute("target");
+      n.removeAttribute("rel");
+      n.style.cursor = "default";
+    }
+  });
+}
+
+function setRichHtml(el, html) {
+  el.innerHTML = String(html || "");
+  sanitizeRichRoot(el);
+}
+
 function renderMaybeHtml(container, html, fallbackText) {
-  // Official content includes MathML/HTML. Render in a sandboxed-ish way by
-  // assigning innerHTML only for trusted-source official fields; this is a
-  // local study tool displaying College Board content fetched by the backend.
   if (typeof html === "string" && html.trim()) {
     const box = el(container, "div", null, "cb-rich");
-    box.innerHTML = html;
+    try {
+      setRichHtml(box, html);
+    } catch {
+      box.textContent = fallbackText || html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    }
     return box;
   }
   if (typeof fallbackText === "string" && fallbackText.trim()) {
-    const pre = el(container, "pre", fallbackText, "cb-pre");
-    return pre;
+    el(container, "pre", fallbackText, "cb-pre");
+    return container.lastChild;
   }
   el(container, "p", "No content.", "cb-muted");
   return null;
@@ -56,24 +147,29 @@ function renderMaybeHtml(container, html, fallbackText) {
 
 function renderQuestion(container, question, options = {}) {
   clear(container);
-  const q = question || {};
+  const q = enrichQuestionView(question || {});
   const wrap = el(container, "div", null, "cb-question");
+  const qid = primaryQuestionId(q);
+  if (qid) el(wrap, "div", `Question ID: ${qid}`, "cb-id cb-id-strong");
+
   const metaParts = [];
   if (q.test) metaParts.push(q.test);
-  if (q.domain) metaParts.push(q.domain);
-  if (q.skill) metaParts.push(q.skill);
-  if (q.difficulty) metaParts.push(q.difficulty);
+  const topic = topicLabel(q);
+  if (topic) metaParts.push(`Topic: ${topic}`);
+  const difficulty = q.difficultyName || q.difficulty;
+  if (difficulty) metaParts.push(`Difficulty: ${difficulty}`);
   if (q.active === true) metaParts.push("active");
   else if (q.active === false) metaParts.push("not active");
   if (metaParts.length) el(wrap, "div", metaParts.join(" · "), "cb-meta");
 
-  const fmtId = (v) => { const raw = String(v == null ? "" : v).trim(); return /^\d+$/.test(raw) ? raw.padStart(8, "0") : raw; };
   const idParts = [];
   if (q.externalId) idParts.push(`externalId: ${q.externalId}`);
-  if (q.questionId) idParts.push(`questionId: ${fmtId(q.questionId)}`);
-  if (q.uId) idParts.push(`uId: ${q.uId}`);
+  const rawQid = formatQuestionId(q.questionId);
+  const rawUid = formatQuestionId(q.uId);
+  if (rawQid) idParts.push(`questionId: ${rawQid}`);
+  if (rawUid && rawUid !== rawQid) idParts.push(`uId: ${rawUid}`);
   if (q.ibn) idParts.push(`IBN: ${q.ibn}`);
-  if (idParts.length) el(wrap, "div", `IDs: ${idParts.join(" · ")}`, "cb-id cb-id-strong");
+  if (idParts.length) el(wrap, "div", idParts.join(" · "), "cb-id");
 
   renderMaybeHtml(wrap, q.promptHtml, q.question);
 
@@ -85,7 +181,8 @@ function renderQuestion(container, question, options = {}) {
       const row = el(list, "div", null, "cb-choice");
       el(row, "span", `${ch.letter || ""}.`, "cb-choice-letter");
       const body = el(row, "span", null, "cb-choice-text");
-      if (ch.html) body.innerHTML = ch.html; else body.textContent = ch.text || "";
+      if (ch.html) setRichHtml(body, ch.html);
+      else body.textContent = ch.text || "";
     });
   }
 
@@ -106,16 +203,8 @@ function renderQuestion(container, question, options = {}) {
     renderMaybeHtml(body, q.rationaleHtml, q.rationale);
   }
 
-  if (q.source || q.sourceUrl) {
-    const src = el(wrap, "div", null, "cb-source");
-    src.append(document.createTextNode(`Official source: ${q.source || "College Board SAT Suite Question Bank"}`));
-    if (q.sourceUrl) {
-      src.append(document.createTextNode(" — "));
-      const a = el(src, "a", q.sourceUrl);
-      a.href = q.sourceUrl;
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-    }
+  if (q.source) {
+    el(wrap, "div", `Official source: ${q.source}`, "cb-source");
   }
   return wrap;
 }
@@ -229,7 +318,10 @@ function createSettings(ctx) {
         items.forEach(item => {
           const row = el(savedBox, "div", null, "cb-saved-item");
           const info = el(row, "div", null, "cb-saved-info");
-          el(info, "div", [item.domain, item.skill, item.difficulty].filter(Boolean).join(" · ") || "(saved)", "cb-meta");
+          const qid = primaryQuestionId(item);
+          if (qid) el(info, "div", `Question ID: ${qid}`, "cb-id cb-id-strong");
+          const topic = [item.domain, item.skill].filter(Boolean).join(" · ");
+          el(info, "div", [topic ? `Topic: ${topic}` : "", item.difficulty ? `Difficulty: ${item.difficulty}` : ""].filter(Boolean).join(" · ") || "(saved)", "cb-meta");
           el(info, "div", String(item.question || "").slice(0, 160), "cb-saved-preview");
           const acts = el(row, "div", null, "cb-saved-actions");
           button(acts, "Open", async () => {
@@ -298,9 +390,11 @@ function createSettings(ctx) {
         if (!attempts.length) { el(reviewList, "p", "No review records yet. Answer questions or import weaknesses.", "cb-muted"); return; }
         attempts.forEach(a => {
           const card = el(reviewList, "div", null, "cb-card");
-          el(card, "div", [a.test, a.domain || a.domainCode, a.skill || a.skillCode, a.difficulty, a.result].filter(Boolean).join(" · "), "cb-meta");
-          const fmtQid = (v) => { const r = String(v == null ? "" : v).trim(); return /^\d+$/.test(r) ? r.padStart(8, "0") : r; };
-          const ids = [a.externalId ? `externalId: ${a.externalId}` : "", a.questionId ? `questionId: ${fmtQid(a.questionId)}` : "", a.uId ? `uId: ${a.uId}` : ""].filter(Boolean).join(" · ");
+          const qid = primaryQuestionId(a);
+          if (qid) el(card, "div", `Question ID: ${qid}`, "cb-id cb-id-strong");
+          const topic = [a.domain || a.domainCode, a.skill || a.skillCode].filter(Boolean).join(" · ");
+          el(card, "div", [a.test, topic ? `Topic: ${topic}` : "", a.difficulty ? `Difficulty: ${a.difficulty}` : "", a.result].filter(Boolean).join(" · "), "cb-meta");
+          const ids = [a.externalId ? `externalId: ${a.externalId}` : "", a.questionId ? `questionId: ${formatQuestionId(a.questionId)}` : "", a.uId ? `uId: ${formatQuestionId(a.uId)}` : ""].filter(Boolean).join(" · ");
           el(card, "div", `${ids || "no question id"} · next: ${a.nextReviewAt || ""} · reps: ${a.reps || 0}`, "cb-id");
           if (a.prompt) el(card, "div", String(a.prompt).slice(0, 180), "cb-saved-preview");
           const acts = el(card, "div", null, "cb-actions");
@@ -335,7 +429,10 @@ function createSettings(ctx) {
         if (!attempts.length) { el(reviewList, "p", "No due review items.", "cb-muted"); return; }
         for (const a of attempts) {
           const card = el(reviewList, "div", null, "cb-card");
-          el(card, "div", [a.domain || a.domainCode, a.skill || a.skillCode, a.difficulty, a.result].filter(Boolean).join(" · "), "cb-meta");
+          const qid = primaryQuestionId(a);
+          if (qid) el(card, "div", `Question ID: ${qid}`, "cb-id cb-id-strong");
+          const topic = [a.domain || a.domainCode, a.skill || a.skillCode].filter(Boolean).join(" · ");
+          el(card, "div", [topic ? `Topic: ${topic}` : "", a.difficulty ? `Difficulty: ${a.difficulty}` : "", a.result].filter(Boolean).join(" · "), "cb-meta");
           el(card, "div", [a.externalId ? `externalId: ${a.externalId}` : "no externalId", `next: ${a.nextReviewAt || ""}`].join(" · "), "cb-id");
           if (a.externalId) button(card, "Re-fetch & practice", async () => {
             try { const q = await ctx.call("fetchQuestion", { fetch: true, externalId: a.externalId, testId: a.testId || 99 }); showSingleResult(q.item || q); }
@@ -443,8 +540,11 @@ function createSettings(ctx) {
         for (const r of results) {
           const card = el(list, "div", null, "cb-card");
           const head = el(card, "div", null, "cb-card-head");
-          el(head, "div", [r.test, r.domainName, r.skill, r.difficultyName].filter(Boolean).join(" · "), "cb-meta");
-          const ids = [r.externalId ? `externalId: ${r.externalId}` : "no externalId", r.questionId ? `questionId: ${r.questionId}` : "", r.uId ? `uId: ${r.uId}` : "", r.ibn ? `IBN: ${r.ibn}` : ""].filter(Boolean).join(" · ");
+          const qid = primaryQuestionId(r);
+          if (qid) el(head, "div", `Question ID: ${qid}`, "cb-id cb-id-strong");
+          const topic = [r.domainName, r.skill].filter(Boolean).join(" · ");
+          el(head, "div", [r.test, topic ? `Topic: ${topic}` : "", r.difficultyName ? `Difficulty: ${r.difficultyName}` : ""].filter(Boolean).join(" · "), "cb-meta");
+          const ids = [r.externalId ? `externalId: ${r.externalId}` : "no externalId", r.questionId ? `questionId: ${formatQuestionId(r.questionId)}` : "", r.uId ? `uId: ${formatQuestionId(r.uId)}` : "", r.ibn ? `IBN: ${r.ibn}` : ""].filter(Boolean).join(" · ");
           el(head, "div", `${r.active ? "Active" : "Not active"} · ${ids}`, "cb-id");
           const acts = el(card, "div", null, "cb-actions");
           const fetchBtn = button(acts, "Fetch question & official explanation", async () => {
@@ -507,17 +607,28 @@ export function activate(ctx) {
         supportedContractVersions: [1],
 
         mountQuestion(container, mountContext) {
-          if (mountContext.signal && mountContext.signal.aborted) return;
-          const payload = (mountContext.input && mountContext.input.payload) ? mountContext.input.payload : (mountContext.input || {});
-          const questionText = (mountContext.input && mountContext.input.question) || payload.question || "";
-          const view = { ...payload, question: questionText };
-          const wrap = el(container, "div", null, "cb-renderer cb-question-mount");
-          const hasChoices = Array.isArray(payload.choices) && payload.choices.length > 0;
-          renderQuestion(wrap, view, { showRationale: false, showAnswer: false, showChoices: !hasChoices });
-          if (hasChoices) {
-            el(wrap, "div", "Select your answer below in the answer editor.", "cb-muted");
+          try {
+            if (mountContext.signal && mountContext.signal.aborted) return;
+            const payload = (mountContext.input && mountContext.input.payload) ? mountContext.input.payload : (mountContext.input || {});
+            const questionText = (mountContext.input && mountContext.input.question) || payload.question || "";
+            const view = { ...payload, question: questionText };
+            const wrap = el(container, "div", null, "cb-renderer cb-question-mount");
+            const blockNav = (e) => {
+              const a = e.target && e.target.closest ? e.target.closest("a[href],a") : null;
+              if (a) { e.preventDefault(); e.stopPropagation(); }
+            };
+            wrap.addEventListener("click", blockNav, true);
+            const hasChoices = Array.isArray(payload.choices) && payload.choices.length > 0;
+            renderQuestion(wrap, view, { showRationale: false, showAnswer: false, showChoices: !hasChoices });
+            if (hasChoices) {
+              el(wrap, "div", "Select your answer below in the answer editor.", "cb-muted");
+            }
+            return () => { wrap.removeEventListener("click", blockNav, true); wrap.replaceChildren(); };
+          } catch (e) {
+            console.error("[collegeboard-sat-questionbank] mountQuestion failed", e);
+            container.textContent = "Question failed to render.";
+            return () => { container.replaceChildren(); };
           }
-          return () => wrap.replaceChildren();
         },
 
         mountAnswerEditor(container, props) {
@@ -539,24 +650,19 @@ export function activate(ctx) {
           };
 
           const statusEl = el(wrap, "div", "", "cb-muted cb-editor-status");
+          const debugEl = el(wrap, "div", "", "cb-muted cb-editor-debug");
+          const inputHost = el(wrap, "div", null, "cb-editor-input");
           const publish = (value) => {
             if (disposed) return;
             const v = String(value == null ? "" : value);
-            const cb = current && current.onChange;
             const state = v.trim() ? { status: "ready", value: v } : { status: "empty" };
-            // Visible debug/status to help diagnose host submit state.
             statusEl.textContent = state.status === "ready" ? "Answer ready to submit." : "Enter an answer to enable submit.";
             statusEl.dataset.cbState = state.status;
             wrap.dataset.cbAnswerState = state.status;
-            debugEl.textContent = `active=${String(isActive())} onChange=${typeof current?.onChange} valueLen=${v.trim().length}`;
-            if (typeof cb !== "function") {
-              console.warn("[collegeboard-sat-questionbank] onChange unavailable", { hasCurrent: !!current, state });
-              return;
-            }
-            try {
-              cb(state);
-            } catch (e) {
-              console.error("[collegeboard-sat-questionbank] onChange failed", e, state);
+            const cb = current && current.onChange;
+            debugEl.textContent = `active=${String(isActive())} onChange=${typeof cb} valueLen=${v.trim().length}`;
+            if (typeof cb === "function") {
+              try { cb(state); } catch (e) { console.error("[collegeboard-sat-questionbank] onChange failed", e, state); }
             }
           };
 
@@ -578,7 +684,11 @@ export function activate(ctx) {
                 input.addEventListener("click", () => { if (input.checked) publish(input.value); });
                 lab.append(input);
                 const span = el(lab, "span", null);
-                span.innerHTML = `<strong>${escapeHtml(ch.letter || "")}.</strong> ${ch.html || escapeHtml(ch.text || "")}`;
+                const strong = document.createElement("strong");
+                strong.textContent = `${ch.letter || ""}.`;
+                span.append(strong, document.createTextNode(" "));
+                if (ch.html) { const body = document.createElement("span"); setRichHtml(body, ch.html); span.append(body); }
+                else span.append(document.createTextNode(ch.text || ""));
                 list.append(lab);
                 inputs.push(input);
               });
@@ -598,15 +708,25 @@ export function activate(ctx) {
           };
 
           renderInputs();
-          // Publish current state after mount so host knows editor is ready/empty.
-          publish(currentValue());
-          setTimeout(() => { try { publish(textarea ? textarea.value : currentValue()); } catch {} }, 0);
-          setTimeout(() => { try { publish(textarea ? textarea.value : currentValue()); } catch {} }, 80);
+          const currentSelection = () => {
+            if (textarea) return textarea.value;
+            const checked = inputs.find(i => i.checked);
+            return checked ? checked.value : currentValue();
+          };
+          // Publish current state after mount and republish as host props become active.
+          publish(currentSelection());
+          setTimeout(() => { try { publish(currentSelection()); } catch {} }, 0);
+          setTimeout(() => { try { publish(currentSelection()); } catch {} }, 80);
+          const republish = () => { if (!disposed) publish(currentSelection()); };
+          wrap.addEventListener("input", republish, true);
+          wrap.addEventListener("change", republish, true);
+          wrap.addEventListener("click", republish, true);
 
           return {
             update(next) {
               if (disposed || !next) return;
-              current = next;
+              // Host update provides {answer, active}; preserve onChange/input/question from mount.
+              current = { ...current, ...next };
               const val = currentValue();
               const active = isActive();
               if (textarea) {
@@ -637,50 +757,66 @@ export function activate(ctx) {
             },
             dispose() {
               disposed = true;
+              wrap.removeEventListener("input", republish, true);
+              wrap.removeEventListener("change", republish, true);
+              wrap.removeEventListener("click", republish, true);
               wrap.replaceChildren();
             },
           };
         },
 
         mountAnswered(container, mountContext) {
-          if (mountContext.signal && mountContext.signal.aborted) return;
-          const payload = (mountContext.input && mountContext.input.payload) ? mountContext.input.payload : (mountContext.input || {});
-          const wrap = el(container, "div", null, "cb-answered");
-          el(wrap, "h3", "Your answer", "cb-subtitle");
-          const ans = mountContext.answer;
-          const ansText = typeof ans === "string" ? ans : (ans && typeof ans.value === "string" ? ans.value : (ans == null ? "" : JSON.stringify(ans)));
-          el(wrap, "pre", ansText || "(no answer)", "cb-pre");
+          try {
+            if (mountContext.signal && mountContext.signal.aborted) return;
+            const payload = (mountContext.input && mountContext.input.payload) ? mountContext.input.payload : (mountContext.input || {});
+            const questionText = (mountContext.input && mountContext.input.question) || payload.question || "";
+            const view = enrichQuestionView({ ...payload, question: questionText });
+            const wrap = el(container, "div", null, "cb-answered");
+            const blockNav = (e) => {
+              const a = e.target && e.target.closest ? e.target.closest("a[href],a") : null;
+              if (a) { e.preventDefault(); e.stopPropagation(); }
+            };
+            wrap.addEventListener("click", blockNav, true);
+            el(wrap, "h3", "Your answer", "cb-subtitle");
+            const ans = mountContext.answer;
+            const ansText = typeof ans === "string" ? ans : (ans && typeof ans.value === "string" ? ans.value : (ans == null ? "" : JSON.stringify(ans)));
+            el(wrap, "pre", ansText || "(no answer)", "cb-pre");
 
-          if (payload.correctAnswer && (!Array.isArray(payload.correctAnswer) || payload.correctAnswer.length)) {
-            const correct = Array.isArray(payload.correctAnswer) ? payload.correctAnswer.join(", ") : String(payload.correctAnswer);
-            if (correct) el(wrap, "div", `Correct answer: ${correct}`, "cb-answer-key");
-          }
-          if (payload.rationale || payload.rationaleHtml) {
-            const details = el(wrap, "details", null, "cb-rationale");
-            details.open = true;
-            el(details, "summary", "Official explanation (College Board)");
-            const body = el(details, "div", null, "cb-rationale-body");
-            renderMaybeHtml(body, payload.rationaleHtml, payload.rationale);
-          }
-          const fmtQid = (v) => { const raw = String(v == null ? "" : v).trim(); return /^\d+$/.test(raw) ? raw.padStart(8, "0") : raw; };
-          const idParts = [];
-          if (payload.externalId) idParts.push(`externalId: ${payload.externalId}`);
-          if (payload.questionId) idParts.push(`questionId: ${fmtQid(payload.questionId)}`);
-          if (payload.uId) idParts.push(`uId: ${payload.uId}`);
-          if (payload.ibn) idParts.push(`IBN: ${payload.ibn}`);
-          if (idParts.length) el(wrap, "div", `IDs: ${idParts.join(" · ")}`, "cb-id cb-id-strong");
-          if (payload.sourceUrl || payload.source) {
-            const src = el(wrap, "div", null, "cb-source");
-            src.append(document.createTextNode(`Official source: ${payload.source || "College Board SAT Suite Question Bank"}`));
-            if (payload.sourceUrl) {
-              src.append(document.createTextNode(" — "));
-              const a = el(src, "a", payload.sourceUrl);
-              a.href = payload.sourceUrl;
-              a.target = "_blank";
-              a.rel = "noopener noreferrer";
+            if (view.correctAnswer && (!Array.isArray(view.correctAnswer) || view.correctAnswer.length)) {
+              const correct = Array.isArray(view.correctAnswer) ? view.correctAnswer.join(", ") : String(view.correctAnswer);
+              if (correct) el(wrap, "div", `Correct answer: ${correct}`, "cb-answer-key");
             }
+            if (view.rationale || view.rationaleHtml) {
+              const details = el(wrap, "details", null, "cb-rationale");
+              details.open = true;
+              el(details, "summary", "Official explanation (College Board)");
+              const body = el(details, "div", null, "cb-rationale-body");
+              renderMaybeHtml(body, view.rationaleHtml, view.rationale);
+            }
+            const qid = primaryQuestionId(view);
+            if (qid) el(wrap, "div", `Question ID: ${qid}`, "cb-id cb-id-strong");
+            const topic = topicLabel(view);
+            const diff = view.difficultyName || view.difficulty;
+            if (topic || diff || view.active === true || view.active === false) {
+              el(wrap, "div", [topic ? `Topic: ${topic}` : "", diff ? `Difficulty: ${diff}` : "", view.active === true ? "active" : view.active === false ? "not active" : ""].filter(Boolean).join(" · "), "cb-meta");
+            }
+            const idParts = [];
+            if (view.externalId) idParts.push(`externalId: ${view.externalId}`);
+            const rawQid = formatQuestionId(view.questionId);
+            const rawUid = formatQuestionId(view.uId);
+            if (rawQid) idParts.push(`questionId: ${rawQid}`);
+            if (rawUid && rawUid !== rawQid) idParts.push(`uId: ${rawUid}`);
+            if (view.ibn) idParts.push(`IBN: ${view.ibn}`);
+            if (idParts.length) el(wrap, "div", idParts.join(" · "), "cb-id");
+            if (view.source) {
+              el(wrap, "div", `Official source: ${view.source}`, "cb-source");
+            }
+            return () => { wrap.removeEventListener("click", blockNav, true); wrap.replaceChildren(); };
+          } catch (e) {
+            console.error("[collegeboard-sat-questionbank] mountAnswered failed", e);
+            container.textContent = "Answered question failed to render.";
+            return () => { container.replaceChildren(); };
           }
-          return () => wrap.replaceChildren();
         },
       }));
     } catch {}
@@ -712,7 +848,10 @@ export function activate(ctx) {
               el(container, "h4", "Due review", "cb-subtitle");
               due.slice(0, 10).forEach(a => {
                 const card = el(container, "div", null, "cb-card");
-                el(card, "div", [a.domain || a.domainCode, a.skill || a.skillCode, a.difficulty, a.result].filter(Boolean).join(" · "), "cb-meta");
+                const qid = primaryQuestionId(a);
+                if (qid) el(card, "div", `Question ID: ${qid}`, "cb-id cb-id-strong");
+                const topic = [a.domain || a.domainCode, a.skill || a.skillCode].filter(Boolean).join(" · ");
+                el(card, "div", [topic ? `Topic: ${topic}` : "", a.difficulty ? `Difficulty: ${a.difficulty}` : "", a.result].filter(Boolean).join(" · "), "cb-meta");
                 el(card, "div", a.externalId ? `externalId: ${a.externalId}` : "No externalId (metadata only)", "cb-id");
                 if (a.externalId) button(card, "Re-fetch official question", async () => {
                   try { const res = await ctx.call("fetchQuestion", { fetch: true, externalId: a.externalId, testId: a.testId || 99 }); if (signal && signal.aborted) return; clear(card); renderQuestion(card, res.item || res, { showRationale: true, showAnswer: true }); }
@@ -729,8 +868,11 @@ export function activate(ctx) {
             if (!items || !items.length) { el(container, "p", "No saved questions yet. Use plugin settings to search and save.", "cb-muted"); return; }
             for (const item of items) {
               const card = el(container, "div", null, "cb-card");
-              el(card, "div", [item.test, item.domain, item.skill, item.difficulty].filter(Boolean).join(" · "), "cb-meta");
-              const idLine = [item.externalId ? `externalId: ${item.externalId}` : "", item.questionId ? `questionId: ${item.questionId}` : "", item.uId ? `uId: ${item.uId}` : "", item.ibn ? `IBN: ${item.ibn}` : ""].filter(Boolean).join(" · ");
+              const qid = primaryQuestionId(item);
+              if (qid) el(card, "div", `Question ID: ${qid}`, "cb-id cb-id-strong");
+              const topic = [item.domain, item.skill].filter(Boolean).join(" · ");
+              el(card, "div", [item.test, topic ? `Topic: ${topic}` : "", item.difficulty ? `Difficulty: ${item.difficulty}` : ""].filter(Boolean).join(" · "), "cb-meta");
+              const idLine = [item.externalId ? `externalId: ${item.externalId}` : "", item.questionId ? `questionId: ${formatQuestionId(item.questionId)}` : "", item.uId ? `uId: ${formatQuestionId(item.uId)}` : "", item.ibn ? `IBN: ${item.ibn}` : ""].filter(Boolean).join(" · ");
               if (idLine) el(card, "div", idLine, "cb-id");
               el(card, "div", String(item.question || "").slice(0, 240), "cb-saved-preview");
               button(card, "Open", async () => {

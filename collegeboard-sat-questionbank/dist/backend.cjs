@@ -40,7 +40,9 @@ const questionSchema = {
           letter: { type: "string" },
           text: { type: "string" },
           html: { type: "string" },
+          correct: { type: "boolean" },
         },
+        additionalProperties: true,
       },
     },
     correctAnswer: {
@@ -51,18 +53,21 @@ const questionSchema = {
     source: { type: "string", description: "Source label, e.g. College Board SAT Suite Question Bank." },
     sourceUrl: { type: "string", description: "Official College Board source URL (e.g. https://satsuiteeducatorquestionbank.collegeboard.org/digital/search)." },
     externalId: { type: "string", description: "College Board external question id (primary fetch key)." },
-    questionId: { type: "string", description: "College Board questionId (serial/reference)." },
-    uId: { type: "string", description: "College Board uId (serial/reference)." },
+    questionId: { type: "string", description: "College Board questionId (serial/reference, 8 digits)." },
+    uId: { type: "string", description: "College Board uId (serial/reference, 8 digits preferred)." },
     ibn: { type: "string", description: "College Board IBN when present; non-empty indicates an active assessment question." },
     test: { type: "string", description: "SAT, PSAT/NMSQT & PSAT 10, or PSAT 8/9." },
+    testId: { type: ["integer", "string"], description: "College Board test id (99 SAT, 100 PSAT/NMSQT & PSAT 10, 102 PSAT 8/9)." },
     domain: { type: "string", description: "Domain/category name." },
+    domainCode: { type: "string", description: "Domain code." },
     skill: { type: "string", description: "Skill description." },
     skillCode: { type: "string", description: "Skill code." },
     difficulty: { type: "string", description: "Easy, Medium, or Hard." },
+    difficultyCode: { type: "string", description: "Difficulty code E/M/H." },
     active: { type: "boolean", description: "Whether College Board marks this as an active assessment question." },
   },
   required: ["question"],
-  additionalProperties: false,
+  additionalProperties: true,
 };
 
 const answerSchema = { type: "string", minLength: 1 };
@@ -130,7 +135,7 @@ const TEACHER_INSTRUCTIONS = [
   "An official College Board SAT Suite Question Bank integration is available (public endpoints, no login). Questions come from official College Board resources: https://satsuiteeducatorquestionbank.collegeboard.org/digital/search (and equivalent SAT Suite Question Bank), fetched via College Board digital question bank endpoints.",
   "To find questions, call fetch_collegeboard_sat_question with {search:true, testId:99|100|102, domains:[...codes], difficulties:['E','M','H'], skills:[...skill codes/descriptions], excludeActive:true|false, limit:N}. Domain codes: H Algebra, P Advanced Math, Q Problem-Solving and Data Analysis, S Geometry and Trigonometry, INI Information and Ideas, CAS Craft and Structure, EOI Expression of Ideas, SEC Standard English Conventions.",
   "Search/fetch results always include question serial/ID fields for manual validation and lookup: externalId (primary fetch key), questionId, uId, and ibn (non-empty IBN means College Board marks it active).",
-  "When providing or posing a question in a session you MUST explicitly state: (1) the question ID/serial(s) — externalId, questionId, uId, and IBN when present, and (2) the official source: College Board SAT Suite Question Bank (https://satsuiteeducatorquestionbank.collegeboard.org/digital/search). Do not omit IDs.",
+  "When providing or posing a question in a session you MUST explicitly state: (1) the primary 8-digit College Board question UID (uId/questionId), (2) the question topic (domain and skill) and difficulty, (3) any other IDs present (externalId, questionId, uId, IBN), and (4) the official source: College Board SAT Suite Question Bank (https://satsuiteeducatorquestionbank.collegeboard.org/digital/search). Do not omit IDs/topic/difficulty.",
   "Search returns question metadata (including serial IDs, domain, skill, difficulty, active flag) but not full text/rationale. To get official question and explanation, call fetch_collegeboard_sat_question with {fetch:true, externalId:'...'} (pass meta from the search result when available).",
   "excludeActive:true filters out questions marked active by College Board (non-empty IBN). Prefer excluding active questions when the user asks for practice not from active assessments. Some active items may lack externalId and cannot be fetched for full text/rationale, but their serial IDs are still returned for reference.",
   "Official explanations come from College Board's question detail 'rationale' field. Quote or faithfully represent them; do not invent an explanation or answer if fetch fails.",
@@ -187,8 +192,9 @@ function buildSavedItem(detail, meta, extra = {}) {
   const rationale = cb.formatRationale(detail);
   const externalId = String(detail.externalid || detail.external_id || summary.externalId || (meta && meta.external_id) || "");
   const questionId = cb.formatQuestionId ? cb.formatQuestionId(summary.questionId || (meta && meta.questionId) || "") : String(summary.questionId || (meta && meta.questionId) || "");
-  const uId = String(summary.uId || (meta && meta.uId) || "");
+  const uId = cb.formatQuestionId ? cb.formatQuestionId(summary.uId || (meta && meta.uId) || "") : String(summary.uId || (meta && meta.uId) || "");
   const ibn = String(summary.ibn || (meta && meta.ibn) || "");
+  const primaryUid = /^\d{8}$/.test(uId) ? uId : (/^\d{8}$/.test(questionId) ? questionId : (uId || questionId || ""));
   const idLineParts = [
     externalId ? `externalId: ${externalId}` : "",
     questionId ? `questionId: ${questionId}` : "",
@@ -198,6 +204,11 @@ function buildSavedItem(detail, meta, extra = {}) {
   const sourceUrl = cb.OFFICIAL_SOURCE_URL || "https://satsuiteeducatorquestionbank.collegeboard.org/digital/search";
   const sourceName = cb.OFFICIAL_SOURCE_NAME || "College Board SAT Suite Question Bank";
   const headerLines = [];
+  if (primaryUid) headerLines.push(`Question UID: ${primaryUid}`);
+  const topic = [summary.domainName || summary.domain || "", summary.skill || ""].filter(Boolean).join(" · ");
+  const difficulty = summary.difficultyName || summary.difficulty || "";
+  if (topic) headerLines.push(`Topic: ${topic}`);
+  if (difficulty) headerLines.push(`Difficulty: ${difficulty}`);
   if (idLineParts.length) headerLines.push(`Question IDs: ${idLineParts.join(" | ")}`);
   headerLines.push(`Official source: ${sourceName} — ${sourceUrl}`);
   const question = [headerLines.join("\n"), bodyText].filter(Boolean).join("\n\n").trim();
@@ -433,10 +444,11 @@ exports.activate = (ctx) => {
     return { ok: true, kind: res.kind, preview, ...res };
   });
 
-  const unregisterInstructions = ctx.registerInstructions({ agents: ["teacher"], text: TEACHER_INSTRUCTIONS });
+  const ALL_AGENTS = ["teacher", "prober", "practice"];
+  const unregisterInstructions = ctx.registerInstructions({ agents: ALL_AGENTS, text: TEACHER_INSTRUCTIONS });
 
   const unregisterTools = ctx.registerTools({
-    agents: ["teacher"],
+    agents: ALL_AGENTS,
     create: (toolContext) => [{
       name: FETCH_TOOL_NAME,
       label: "Fetch College Board SAT question",
