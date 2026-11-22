@@ -188,7 +188,7 @@ function buildSavedItem(detail, meta, extra = {}) {
     html: String(opt.content || ""),
     correct: keys.has(opt.id),
   }));
-  const bodyText = cb.formatQuestionText(detail) || cb.stripHtml(detail.stem);
+  const bodyText = cb.formatQuestionText(detail) || [cb.stripHtml(detail.stimulus), cb.stripHtml(detail.stem)].filter(Boolean).join("\n\n");
   const rationale = cb.formatRationale(detail);
   const externalId = String(detail.externalid || detail.external_id || summary.externalId || (meta && meta.external_id) || "");
   const questionId = cb.formatQuestionId ? cb.formatQuestionId(summary.questionId || (meta && meta.questionId) || "") : String(summary.questionId || (meta && meta.questionId) || "");
@@ -213,10 +213,13 @@ function buildSavedItem(detail, meta, extra = {}) {
   headerLines.push(`Official source: ${sourceName} — ${sourceUrl}`);
   const question = [headerLines.join("\n"), bodyText].filter(Boolean).join("\n\n").trim();
 
+  const promptHtml = [detail.stimulus, detail.stem].filter(v => typeof v === "string" && v.trim()).join("\n");
   return {
     id: `cb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
     question,
-    promptHtml: String(detail.stem || ""),
+    promptHtml,
+    stimulusHtml: String(detail.stimulus || ""),
+    stemHtml: String(detail.stem || ""),
     choices,
     correctAnswer: detail.correct_answer || detail.keys || [],
     rationale,

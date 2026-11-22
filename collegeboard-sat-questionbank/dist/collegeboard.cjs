@@ -133,8 +133,10 @@ function stripHtml(html) {
 }
 
 function formatQuestionText(question) {
+  const stimulus = stripHtml(question && question.stimulus);
   const stem = stripHtml(question && question.stem);
   const parts = [];
+  if (stimulus) parts.push(stimulus);
   if (stem) parts.push(stem);
   const options = Array.isArray(question && question.answerOptions) ? question.answerOptions : [];
   if (options.length) {

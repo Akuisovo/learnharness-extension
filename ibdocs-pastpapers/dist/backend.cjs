@@ -474,13 +474,14 @@ exports.activate = (ctx) => {
   });
 
   // --- Agent contributions -------------------------------------------------
+  const ALL_AGENTS = ["teacher", "prober", "practice"];
   const unregisterInstructions = ctx.registerInstructions({
-    agents: ["teacher"],
+    agents: ALL_AGENTS,
     text: TEACHER_INSTRUCTIONS,
   });
 
   const unregisterTools = ctx.registerTools({
-    agents: ["teacher"],
+    agents: ALL_AGENTS,
     create: (toolContext) => [
       {
         name: FETCH_TOOL_NAME,

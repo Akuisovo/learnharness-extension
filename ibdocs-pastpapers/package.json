@@ -1,6 +1,6 @@
 {
   "name": "ibdocs-pastpapers",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "LearnHarness extension that finds IB past-paper questions from ibdocs.re by topic for question generation.",
   "scripts": {
