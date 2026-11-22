@@ -88,6 +88,13 @@ function isActiveQuestion(meta) {
   return !!(ibn != null && String(ibn).trim() !== "");
 }
 
+function formatQuestionId(value) {
+  const raw = String(value == null ? "" : value).trim();
+  if (!raw) return "";
+  if (/^\d+$/.test(raw)) return raw.padStart(8, "0");
+  return raw;
+}
+
 function difficultyName(code) {
   const found = DIFFICULTIES.find(d => d.code === code);
   return found ? found.name : String(code || "");
@@ -250,7 +257,7 @@ function filterMetadata(items, { difficulties, skills, excludeActive, requireExt
 function summariseMetadata(item, asmtEventId) {
   return {
     externalId: item.external_id || "",
-    questionId: item.questionId || "",
+    questionId: formatQuestionId(item.questionId || ""),
     uId: item.uId || "",
     testId: Number(asmtEventId) || 99,
     test: testName(asmtEventId || 99),
@@ -287,4 +294,5 @@ module.exports = {
   fetchQuestionDetail,
   filterMetadata,
   summariseMetadata,
+  formatQuestionId,
 };

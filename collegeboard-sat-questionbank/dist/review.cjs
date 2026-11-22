@@ -110,7 +110,8 @@ function normaliseAttemptInput(input, inferred = {}) {
   const src = input && typeof input === "object" ? input : {};
   const result = normaliseResult(src.result || inferred.result);
   const externalId = cleanText(src.externalId || inferred.externalId, 120);
-  const questionId = cleanText(src.questionId || inferred.questionId, 120);
+  const rawQuestionId = cleanText(src.questionId || inferred.questionId, 120);
+  const questionId = /^\d+$/.test(rawQuestionId) ? rawQuestionId.padStart(8, "0") : rawQuestionId;
   const uId = cleanText(src.uId || inferred.uId, 120);
   const ibn = cleanText(src.ibn || inferred.ibn, 120);
   const skill = cleanText(src.skill || inferred.skill, 200);

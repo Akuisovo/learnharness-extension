@@ -67,9 +67,10 @@ function renderQuestion(container, question, options = {}) {
   else if (q.active === false) metaParts.push("not active");
   if (metaParts.length) el(wrap, "div", metaParts.join(" · "), "cb-meta");
 
+  const fmtId = (v) => { const raw = String(v == null ? "" : v).trim(); return /^\d+$/.test(raw) ? raw.padStart(8, "0") : raw; };
   const idParts = [];
   if (q.externalId) idParts.push(`externalId: ${q.externalId}`);
-  if (q.questionId) idParts.push(`questionId: ${q.questionId}`);
+  if (q.questionId) idParts.push(`questionId: ${fmtId(q.questionId)}`);
   if (q.uId) idParts.push(`uId: ${q.uId}`);
   if (q.ibn) idParts.push(`IBN: ${q.ibn}`);
   if (idParts.length) el(wrap, "div", `IDs: ${idParts.join(" · ")}`, "cb-id cb-id-strong");
@@ -298,7 +299,8 @@ function createSettings(ctx) {
         attempts.forEach(a => {
           const card = el(reviewList, "div", null, "cb-card");
           el(card, "div", [a.test, a.domain || a.domainCode, a.skill || a.skillCode, a.difficulty, a.result].filter(Boolean).join(" · "), "cb-meta");
-          const ids = [a.externalId ? `externalId: ${a.externalId}` : "", a.questionId ? `questionId: ${a.questionId}` : "", a.uId ? `uId: ${a.uId}` : ""].filter(Boolean).join(" · ");
+          const fmtQid = (v) => { const r = String(v == null ? "" : v).trim(); return /^\d+$/.test(r) ? r.padStart(8, "0") : r; };
+          const ids = [a.externalId ? `externalId: ${a.externalId}` : "", a.questionId ? `questionId: ${fmtQid(a.questionId)}` : "", a.uId ? `uId: ${a.uId}` : ""].filter(Boolean).join(" · ");
           el(card, "div", `${ids || "no question id"} · next: ${a.nextReviewAt || ""} · reps: ${a.reps || 0}`, "cb-id");
           if (a.prompt) el(card, "div", String(a.prompt).slice(0, 180), "cb-saved-preview");
           const acts = el(card, "div", null, "cb-actions");
@@ -660,9 +662,10 @@ export function activate(ctx) {
             const body = el(details, "div", null, "cb-rationale-body");
             renderMaybeHtml(body, payload.rationaleHtml, payload.rationale);
           }
+          const fmtQid = (v) => { const raw = String(v == null ? "" : v).trim(); return /^\d+$/.test(raw) ? raw.padStart(8, "0") : raw; };
           const idParts = [];
           if (payload.externalId) idParts.push(`externalId: ${payload.externalId}`);
-          if (payload.questionId) idParts.push(`questionId: ${payload.questionId}`);
+          if (payload.questionId) idParts.push(`questionId: ${fmtQid(payload.questionId)}`);
           if (payload.uId) idParts.push(`uId: ${payload.uId}`);
           if (payload.ibn) idParts.push(`IBN: ${payload.ibn}`);
           if (idParts.length) el(wrap, "div", `IDs: ${idParts.join(" · ")}`, "cb-id cb-id-strong");

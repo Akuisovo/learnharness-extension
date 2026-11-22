@@ -101,7 +101,7 @@ const questionType = {
     try {
       review.recordAttempt({
         externalId: payload.externalId,
-        questionId: payload.questionId,
+        questionId: cb.formatQuestionId ? cb.formatQuestionId(payload.questionId) : payload.questionId,
         uId: payload.uId,
         ibn: payload.ibn,
         testId: payload.testId,
@@ -186,7 +186,7 @@ function buildSavedItem(detail, meta, extra = {}) {
   const bodyText = cb.formatQuestionText(detail) || cb.stripHtml(detail.stem);
   const rationale = cb.formatRationale(detail);
   const externalId = String(detail.externalid || detail.external_id || summary.externalId || (meta && meta.external_id) || "");
-  const questionId = String(summary.questionId || (meta && meta.questionId) || "");
+  const questionId = cb.formatQuestionId ? cb.formatQuestionId(summary.questionId || (meta && meta.questionId) || "") : String(summary.questionId || (meta && meta.questionId) || "");
   const uId = String(summary.uId || (meta && meta.uId) || "");
   const ibn = String(summary.ibn || (meta && meta.ibn) || "");
   const idLineParts = [

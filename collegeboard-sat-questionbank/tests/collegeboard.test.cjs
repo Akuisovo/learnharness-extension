@@ -52,10 +52,10 @@ test("filterMetadata applies difficulty, skill, active and external id filters",
   assert.deepEqual(noActive.map(i => i.external_id || "none"), ["e1", "none"]);
 });
 
-test("summariseMetadata maps fields", () => {
+test("summariseMetadata maps fields and pads numeric questionId to 8 digits", () => {
   const s = cb.summariseMetadata({
     external_id: "ex",
-    questionId: "qid",
+    questionId: "87756",
     uId: "uid",
     primary_class_cd: "H",
     primary_class_cd_desc: "Algebra",
@@ -65,6 +65,7 @@ test("summariseMetadata maps fields", () => {
     ibn: "X",
   }, 99);
   assert.equal(s.externalId, "ex");
+  assert.equal(s.questionId, "00087756");
   assert.equal(s.domainName, "Algebra");
   assert.equal(s.difficultyName, "Medium");
   assert.equal(s.active, true);
@@ -76,14 +77,14 @@ test("backend normalises filters and builds saved item", () => {
   assert.deepEqual(backend.__test.normaliseDomains(["h", "P", "nope", "ini"]), ["H", "P", "INI"]);
   const item = backend.__test.buildSavedItem(
     { stem: "<p>Q</p>", rationale: "<p>R</p>", answerOptions: [{ id: "1", content: "<p>A</p>" }], keys: ["1"], correct_answer: ["1"], externalid: "ex1" },
-    { external_id: "ex1", questionId: "qid1", uId: "uid1", primary_class_cd_desc: "Algebra", skill_desc: "Linear equations in one variable", difficulty: "E", ibn: "IBN1" },
+    { external_id: "ex1", questionId: "87756", uId: "uid1", primary_class_cd_desc: "Algebra", skill_desc: "Linear equations in one variable", difficulty: "E", ibn: "IBN1" },
     { testId: 99 }
   );
   assert.equal(item.externalId, "ex1");
-  assert.equal(item.questionId, "qid1");
+  assert.equal(item.questionId, "00087756");
   assert.equal(item.uId, "uid1");
   assert.equal(item.ibn, "IBN1");
-  assert.match(item.question, /Question IDs: externalId: ex1 \| questionId: qid1 \| uId: uid1 \| IBN: IBN1/);
+  assert.match(item.question, /Question IDs: externalId: ex1 \| questionId: 00087756 \| uId: uid1 \| IBN: IBN1/);
   assert.match(item.question, /Official source: College Board SAT Suite Question Bank — https:\/\/satsuiteeducatorquestionbank\.collegeboard\.org\/digital\/search/);
   assert.match(item.question, /Q\n\nA\. A$/);
   assert.equal(item.rationale, "R");

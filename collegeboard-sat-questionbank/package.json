@@ -1,6 +1,6 @@
 {
   "name": "collegeboard-sat-questionbank",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "description": "LearnHarness extension that fetches official College Board SAT Suite Question Bank questions by topic, skill, difficulty, with active-question exclusion and official explanations.",
   "scripts": {
